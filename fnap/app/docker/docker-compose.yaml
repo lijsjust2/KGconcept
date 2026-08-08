@@ -5,9 +5,9 @@ services:
     ports:
       - "8880:8880"
     volumes:
-      # data-share 声明的共享目录名: KGconcept/downloads
-      # 飞牛文档说明: 通过 /var/apps/{appname}/share/ 下的软链访问
-      - "/var/apps/KGconcept/share/KGconcept/downloads:/app/downloads"
+      # data-share 声明的共享目录: KGconcept/downloads
+      # 飞牛自动创建路径: /var/apps/{appname}/shares/{share_name}
+      - "/var/apps/KGconcept/shares/KGconcept/downloads:/app/downloads"
     environment:
       - FNOS_ENV=true
       - DOWNLOAD_DIR=/app/downloads

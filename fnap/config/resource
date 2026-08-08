@@ -10,8 +10,14 @@
   "data-share": {
     "shares": [
       {
+        "name": "KGconcept"
+      },
+      {
         "name": "KGconcept/downloads"
       }
     ]
-  }
+  },
+  "api-scope": [
+    "trim.file.sharedAccess"
+  ]
 }
