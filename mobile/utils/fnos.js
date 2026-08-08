@@ -1,0 +1,75 @@
+import { get, post } from './request'
+
+const log = (...args) => {
+  console.log('[fnos]', ...args)
+}
+
+let fnosStatus = null
+let statusChecked = false
+let checkingPromise = null
+
+/**
+ * 检测当前是否运行在飞牛 fnOS 环境下
+ * 首次调用会请求后端 /fnos/status，后续返回缓存结果
+ * @returns {Promise<{isFnos: boolean, downloadDir: string, enabled: boolean}>}
+ */
+export async function checkFnosEnv() {
+  if (statusChecked) return fnosStatus
+  if (checkingPromise) return checkingPromise
+
+  checkingPromise = (async () => {
+    try {
+      const res = await get('/fnos/status', {}, { timeout: 5000 })
+      fnosStatus = {
+        isFnos: !!res?.isFnos,
+        downloadDir: res?.downloadDir || '',
+        enabled: !!res?.enabled,
+      }
+      log('飞牛环境检测结果:', fnosStatus)
+    } catch (e) {
+      log('飞牛环境检测失败，视为非飞牛环境:', e?.message)
+      fnosStatus = { isFnos: false, downloadDir: '', enabled: false }
+    }
+    statusChecked = true
+    checkingPromise = null
+    return fnosStatus
+  })()
+
+  return checkingPromise
+}
+
+/**
+ * 同步获取已缓存的飞牛环境状态
+ * 如果尚未检测过，返回默认的非飞牛状态
+ * @returns {{isFnos: boolean, downloadDir: string, enabled: boolean}}
+ */
+export function getFnosStatus() {
+  return fnosStatus || { isFnos: false, downloadDir: '', enabled: false }
+}
+
+/**
+ * 在飞牛环境下，通过后端下载文件到共享目录
+ * 文件按 歌手/专辑/文件名 组织存储
+ * @param {string} url 音频文件下载URL
+ * @param {string} fileName 保存的文件名
+ * @param {string} artist 歌手名
+ * @param {string} album 专辑名
+ * @returns {Promise<{success: boolean, path?: string, msg?: string}>}
+ */
+export async function downloadToFnos(url, fileName, artist, album) {
+  try {
+    const res = await post(
+      '/fnos/download',
+      { url, fileName, artist, album },
+      { timeout: 120000 }
+    )
+    if (res?.code === 0) {
+      log('飞牛下载成功:', res.data?.path)
+      return { success: true, path: res.data?.path }
+    }
+    return { success: false, msg: res?.msg || '下载失败' }
+  } catch (e) {
+    log('飞牛下载请求失败:', e?.message)
+    return { success: false, msg: e?.message || '下载请求失败' }
+  }
+}

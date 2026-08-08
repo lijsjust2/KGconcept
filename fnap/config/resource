@@ -1,0 +1,17 @@
+{
+  "docker-project": {
+    "projects": [
+      {
+        "name": "kgconcept",
+        "path": "docker"
+      }
+    ]
+  },
+  "data-share": {
+    "shares": [
+      {
+        "name": "KGconcept/downloads"
+      }
+    ]
+  }
+}

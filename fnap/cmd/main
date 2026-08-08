@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# KGconcept 应用运行控制脚本
+# 处理 start / stop / status，通过 docker compose 管理容器
+
+COMPOSE_DIR="$TRIM_APPDEST/app/docker"
+cd "$COMPOSE_DIR" || {
+  echo "Docker compose 目录不存在: $COMPOSE_DIR" > "$TRIM_TEMP_LOGFILE"
+  exit 1
+}
+
+# 解析共享目录实际路径（软链 -> 真实路径），用于挂载到容器
+SHARE_LINK="/var/apps/KGconcept/share/downloads"
+DOWNLOAD_SHARE_PATH=$(readlink -f "$SHARE_LINK" 2>/dev/null || echo "$SHARE_LINK")
+export DOWNLOAD_SHARE_PATH
+export SERVICE_PORT="${TRIM_SERVICE_PORT:-8880}"
+
+case "$1" in
+  start)
+    echo "启动 KGconcept..." > "$TRIM_TEMP_LOGFILE"
+    docker compose up -d 2>> "$TRIM_TEMP_LOGFILE" || {
+      echo "docker compose 启动失败" > "$TRIM_TEMP_LOGFILE"
+      exit 1
+    }
+    exit 0
+    ;;
+
+  stop)
+    echo "停止 KGconcept..." > "$TRIM_TEMP_LOGFILE"
+    docker compose down 2>> "$TRIM_TEMP_LOGFILE" || true
+    exit 0
+    ;;
+
+  status)
+    if docker compose ps --status running -q 2>/dev/null | grep -q .; then
+      exit 0
+    fi
+    exit 3
+    ;;
+
+  *)
+    echo "未知命令: $1" > "$TRIM_TEMP_LOGFILE"
+    exit 1
+    ;;
+esac

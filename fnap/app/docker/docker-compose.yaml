@@ -1,0 +1,12 @@
+services:
+  kgconcept:
+    image: lijsfun/kgconcept:latest
+    container_name: kgconcept
+    restart: unless-stopped
+    ports:
+      - "${SERVICE_PORT:-8880}:8880"
+    volumes:
+      - "${DOWNLOAD_SHARE_PATH:-/var/apps/KGconcept/share/downloads}:/app/downloads"
+    environment:
+      - FNOS_ENV=true
+      - DOWNLOAD_DIR=/app/downloads

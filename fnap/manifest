@@ -1,0 +1,23 @@
+appname=KGconcept
+version=1.5.8
+display_name=KGconcept
+desc=KGconcept 酷狗音乐移动端，支持在线试听与歌曲下载。在飞牛环境下下载的歌曲会自动保存到应用的共享目录。
+source=thirdparty
+platform=all
+
+maintainer=lijsfun
+maintainer_url=https://github.com/lijsjust2/KGconcept
+
+os_min_version=1.2.0
+
+desktop_uidir=ui
+desktop_applaunchname=KGconcept.Application
+
+service_port=8880
+checkport=true
+
+ctl_stop=true
+micro_app=true
+disable_authorization_path=true
+
+changelog=初始飞牛 fnOS 版本，支持应用内下载歌曲到飞牛共享目录。

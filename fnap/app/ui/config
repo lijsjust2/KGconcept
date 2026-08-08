@@ -1,0 +1,13 @@
+{
+  ".url": {
+    "KGconcept.Application": {
+      "title": "KGconcept",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "protocol": "http",
+      "port": "8880",
+      "url": "/",
+      "allUsers": true
+    }
+  }
+}

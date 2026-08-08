@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# 安装后执行：确保共享目录存在
+mkdir -p /var/apps/KGconcept/share/downloads 2>/dev/null || true
+
+exit 0
