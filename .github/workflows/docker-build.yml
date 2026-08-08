@@ -269,8 +269,11 @@ jobs:
                - 安装完成后从桌面打开 KGconcept
 
             3. **下载目录说明**
-               - 飞牛环境下，下载的歌曲会自动保存到共享目录 `KGconcept/downloads`
-               - 在飞牛文件管理器的共享文件夹中可找到，按「歌手/专辑」自动分类
+               - 飞牛环境下，下载的歌曲会自动保存到共享目录 **`KGconcept/downloads`**
+               - 在飞牛文件管理器左侧「共享」中可找到 `KGconcept` 共享文件夹，按「歌手/专辑」自动分类
+               - 实际物理路径：`/var/apps/KGconcept/share/KGconcept/downloads`（容器中挂载为 `/app/downloads`）
+               - 若下载后找不到文件：请在应用「应用设置 → 目录」中确认共享目录已存在，或检查容器内
+                 `/app/downloads/.download.log` 和 `/app/downloads/.mount_diagnose.log` 两个日志排查挂载是否生效
                - 非飞牛环境（直接 Docker 运行）仍使用浏览器默认下载
 
             ### Docker 直接使用（非飞牛环境）

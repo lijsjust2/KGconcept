@@ -157,6 +157,12 @@ async function consturctServer(moduleDefs) {
 
     // 下载文件到共享目录，按 歌手/专辑/文件名 组织
     app.post('/fnos/download', async (req, res) => {
+      const logDownload = (msg) => {
+        const ts = new Date().toISOString();
+        const line = `[${ts}] ${msg}\n`;
+        fs.promises.appendFile(path.join(DOWNLOAD_DIR, '.download.log'), line).catch(() => {});
+      };
+
       try {
         const { url, fileName, artist, album } = req.body || {};
         if (!url || !fileName) {
@@ -166,24 +172,53 @@ async function consturctServer(moduleDefs) {
         const safeAlbum = sanitize(album || '未知专辑');
         const safeFileName = sanitize(fileName);
 
+        // 关键诊断：检查 DOWNLOAD_DIR 是否真实可写
+        try {
+          await fs.promises.access(DOWNLOAD_DIR, fs.constants.W_OK);
+        } catch (e) {
+          // 尝试修复权限
+          try {
+            await fs.promises.chmod(DOWNLOAD_DIR, 0o777);
+            await fs.promises.access(DOWNLOAD_DIR, fs.constants.W_OK);
+          } catch (_) {
+            logDownload(`ERROR: DOWNLOAD_DIR ${DOWNLOAD_DIR} 不可写，挂载可能未生效。文件将写入容器内部层（重启即丢失）。`);
+          }
+        }
+
         const dir = path.join(DOWNLOAD_DIR, safeArtist, safeAlbum);
         await fs.promises.mkdir(dir, { recursive: true });
 
         const filePath = path.join(dir, safeFileName);
         const response = await axios.get(url, { responseType: 'stream', timeout: 60000, maxRedirects: 5 });
+
+        // 真正写入前确认文件创建成功（catch 权限错误）
         const writer = fs.createWriteStream(filePath);
+        let writeError = null;
+        writer.on('error', (err) => {
+          writeError = err;
+          logDownload(`ERROR: createWriteStream失败 ${filePath}: ${err.message}`);
+        });
         response.data.pipe(writer);
 
         await new Promise((resolve, reject) => {
-          writer.on('finish', resolve);
+          writer.on('finish', () => {
+            if (writeError) reject(writeError);
+            else resolve();
+          });
           writer.on('error', reject);
+          response.data.on('error', reject);
         });
 
         const relativePath = path.join(safeArtist, safeAlbum, safeFileName);
-        console.log('[FNOS] 文件已保存:', relativePath);
-        res.json({ code: 0, msg: '下载成功', data: { path: relativePath } });
+        const absPath = filePath;
+        let fileSize = -1;
+        try { fileSize = (await fs.promises.stat(absPath)).size; } catch (__) {}
+        logDownload(`SUCCESS: 保存到本地绝对路径=${absPath} 相对路径=${relativePath} 大小=${fileSize}B`);
+        console.log('[FNOS] 文件已保存:', absPath, relativePath, `${fileSize}B`);
+        res.json({ code: 0, msg: '下载成功', data: { path: relativePath, absPath: absPath, size: fileSize } });
       } catch (e) {
         console.error('[FNOS] 下载失败:', e.message);
+        logDownload(`ERROR: 下载异常: ${e.message}`);
         res.status(500).json({ code: 1, msg: '下载失败: ' + e.message });
       }
     });
