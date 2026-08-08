@@ -2,8 +2,11 @@
 
 # KGconcept 应用运行控制脚本
 # 处理 start / stop / status，通过 docker compose 管理容器
+# compose project name 必须与 config/resource 中 docker-project.name 保持一致
 
 COMPOSE_DIR="$TRIM_APPDEST/app/docker"
+COMPOSE_PROJECT="kgconcept"
+
 cd "$COMPOSE_DIR" || {
   echo "Docker compose 目录不存在: $COMPOSE_DIR" > "$TRIM_TEMP_LOGFILE"
   exit 1
@@ -15,11 +18,27 @@ DOWNLOAD_SHARE_PATH=$(readlink -f "$SHARE_LINK" 2>/dev/null || echo "$SHARE_LINK
 export DOWNLOAD_SHARE_PATH
 export SERVICE_PORT="${TRIM_SERVICE_PORT:-8880}"
 
+DC="docker compose -p $COMPOSE_PROJECT"
+
 case "$1" in
   start)
     echo "启动 KGconcept..." > "$TRIM_TEMP_LOGFILE"
-    docker compose up -d 2>> "$TRIM_TEMP_LOGFILE" || {
-      echo "docker compose 启动失败" > "$TRIM_TEMP_LOGFILE"
+
+    # 先检查是否已在运行（避免重复启动导致端口占用）
+    if $DC ps --status running -q 2>/dev/null | grep -q .; then
+      echo "KGconcept 已在运行，无需重复启动" >> "$TRIM_TEMP_LOGFILE"
+      exit 0
+    fi
+
+    # 清理残留的同容器名（来自旧版本 compose project 不一致）
+    if docker ps -a --format '{{.Names}}' | grep -qx "$COMPOSE_PROJECT"; then
+      echo "清理同名残留容器 $COMPOSE_PROJECT" >> "$TRIM_TEMP_LOGFILE"
+      docker rm -f "$COMPOSE_PROJECT" 2>>"$TRIM_TEMP_LOGFILE" || true
+    fi
+
+    $DC up -d 2>> "$TRIM_TEMP_LOGFILE" || {
+      echo "docker compose 启动失败，容器列表：" >> "$TRIM_TEMP_LOGFILE"
+      $DC ps >> "$TRIM_TEMP_LOGFILE" 2>&1
       exit 1
     }
     exit 0
@@ -27,12 +46,12 @@ case "$1" in
 
   stop)
     echo "停止 KGconcept..." > "$TRIM_TEMP_LOGFILE"
-    docker compose down 2>> "$TRIM_TEMP_LOGFILE" || true
+    $DC down 2>> "$TRIM_TEMP_LOGFILE" || true
     exit 0
     ;;
 
   status)
-    if docker compose ps --status running -q 2>/dev/null | grep -q .; then
+    if $DC ps --status running -q 2>/dev/null | grep -q .; then
       exit 0
     fi
     exit 3
