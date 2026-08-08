@@ -1,7 +1,5 @@
 #!/bin/bash
 
-# 升级后执行：拉取新镜像
-IMAGE="lijsfun/kgconcept:latest"
-docker pull "$IMAGE" 2>/dev/null || true
+### This script is called after the application is upgraded.
 
 exit 0

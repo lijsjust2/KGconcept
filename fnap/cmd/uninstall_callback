@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# 卸载后执行：清理容器镜像（可选，保留下载数据）
-docker image rm lijsfun/kgconcept:latest 2>/dev/null || true
+### This script is called after the application is uninstalled.
 
 exit 0

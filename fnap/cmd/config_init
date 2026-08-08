@@ -1,4 +1,5 @@
 #!/bin/bash
 
-# 配置变更前执行
+### This script is called before the application configuration is changed.
+
 exit 0

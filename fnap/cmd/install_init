@@ -1,16 +1,6 @@
 #!/bin/bash
 
-# 安装前执行：检查并拉取 Docker 镜像
-# 镜像不在 fpk 内置，安装时自动从 Docker Hub 拉取，失败不阻止安装
-
-IMAGE="lijsfun/kgconcept:latest"
-
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "正在拉取镜像 $IMAGE ..." > "$TRIM_TEMP_LOGFILE"
-  if ! docker pull "$IMAGE" 2>> "$TRIM_TEMP_LOGFILE"; then
-    echo "警告：镜像自动拉取失败。请手动执行: docker pull $IMAGE" > "$TRIM_TEMP_LOGFILE"
-    echo "或从 GitHub Releases 下载 tar 包后执行: docker load -i kgconcept-*.tar" > "$TRIM_TEMP_LOGFILE"
-  fi
-fi
+### This script is called before the user installs the application.
+### Docker 应用由飞牛 appcenter 自动管理镜像拉取和容器启动，这里不做任何事。
 
 exit 0

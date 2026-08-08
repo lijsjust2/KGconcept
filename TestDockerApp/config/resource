@@ -1,0 +1,20 @@
+{
+  "docker-project": {
+    "projects": [
+      {
+        "name": "TestDockerApp",
+        "path": "docker"
+      }
+    ]
+  },
+  "data-share": {
+    "shares": [
+      {
+        "name": "TestDockerApp"
+      },
+      {
+        "name": "TestDockerApp/data"
+      }
+    ]
+  }
+}
