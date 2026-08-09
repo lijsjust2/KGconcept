@@ -7,22 +7,31 @@ echo "FNOS_ENV=$FNOS_ENV"
 echo "DOWNLOAD_DIR=$DOWNLOAD_DIR"
 
 # ============================================================
-# TRIM_API_TOKEN 获取流程（三重保障）
+# TRIM_API_TOKEN 获取流程
 #
-# 飞牛 appcenter 启动 Docker 容器时，不会把 token 直接注入容器环境。
-# token 由飞牛在调用 cmd/* 脚本时注入，我们通过文件中转：
+# 飞牛文档: https://developer.fnnas.com/api/calling/#接口调用认证
+#   - 所有后端 API 必须通过 Authorization: Bearer <token> 鉴权
+#   - token 由飞牛在调用应用脚本（cmd/* / install_callback / config_callback）
+#     时通过 TRIM_API_TOKEN 环境变量注入
 #
-#   飞牛调用 install_callback / config_callback / cmd/main 时
-#     → 环境变量里有 TRIM_API_TOKEN
-#     → 写入 /var/apps/KGconcept/.trim_token
-#     → docker-compose 挂载到容器内 /app/.trim_token
-#     → 这里读取并 export
+# 但飞牛 appcenter 启动 docker-compose 时，不会把 TRIM_API_TOKEN 直接注入容器。
+# 我们通过以下机制中转：
+#
+#   飞牛执行脚本时注入 TRIM_API_TOKEN + TRIM_APPDEST
+#     → 我们的脚本写入 ${TRIM_APPDEST}/.trim_token
+#        （默认 /var/apps/KGconcept/.trim_token，
+#          也可通过容器环境变量 TRIM_TOKEN_FILE 覆盖）
+#     → docker-compose 把整个 /var/apps/KGconcept 目录只读挂载进容器
+#        （避免单文件挂载时 docker 误创建空目录的 bug）
+#     → 这里读取文件并 export
 # ============================================================
 
-TOKEN_FILE="/app/.trim_token"
+TOKEN_FILE="${TRIM_TOKEN_FILE:-/var/apps/KGconcept/.trim_token}"
 TOKEN_READY=0
 MAX_WAIT=30
 WAIT_COUNT=0
+
+echo "TOKEN_FILE=$TOKEN_FILE"
 
 # 轮询等待 token 文件（最多 30 秒，每秒检查一次）
 while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
@@ -34,23 +43,30 @@ while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
             TOKEN_READY=1
             break
         else
-            echo "⏳ $TOKEN_FILE exists but is EMPTY, waiting... ($((WAIT_COUNT+1))/$MAX_WAIT)"
+            echo "⏳ $TOKEN_FILE 存在但是 EMPTY (0 bytes), waiting... ($((WAIT_COUNT+1))/$MAX_WAIT)"
         fi
+    elif [ -d "$TOKEN_FILE" ]; then
+        echo "❌ FATAL: $TOKEN_FILE 是目录，不是文件！docker 把挂载文件创建成了空目录。"
+        echo "   → 请卸载应用，删除宿主机 /var/apps/KGconcept/.trim_token（如果是目录）后重装"
+        # 不 break，继续等，也许后续脚本会重建
     else
-        echo "⏳ Waiting for $TOKEN_FILE to appear... ($((WAIT_COUNT+1))/$MAX_WAIT)"
+        echo "⏳ 等待 $TOKEN_FILE 出现... ($((WAIT_COUNT+1))/$MAX_WAIT)"
     fi
     WAIT_COUNT=$((WAIT_COUNT + 1))
     sleep 1
 done
 
 if [ $TOKEN_READY -eq 0 ]; then
-    echo "⚠️  WARNING: TRIM_API_TOKEN not available after ${MAX_WAIT}s."
-    echo "   Backend API calls (getSharedAccessibleFolders, convertPath) will fail."
-    echo "   Make sure install_callback / config_callback scripts wrote the token file."
+    echo "⚠️  WARNING: TRIM_API_TOKEN 不可用 (${MAX_WAIT}s 超时)"
+    echo "   未拿到有效 token 时，trim.file.getSharedAccessibleFolders 会返回 200004 Unauthorized"
+    echo "   排查方法："
+    echo "   1) 查看宿主机 /var/apps/KGconcept/.cmd_diagnose.log 确认飞牛脚本是否真的执行并写入 token"
+    echo "   2) 确认 /var/apps/KGconcept/.trim_token 是否是普通文件 (不是目录) 且内容非空"
     export TRIM_API_TOKEN=""
 fi
 
 echo "TRIM_APPNAME=$TRIM_APPNAME"
+echo "TRIM_TOKEN_FILE=$TOKEN_FILE"
 echo "========================================"
 
 # Ensure download directory exists
@@ -63,10 +79,25 @@ MOUNT_LOG="/app/downloads/.mount_diagnose.log"
   echo "FNOS_ENV=$FNOS_ENV"
   echo "DOWNLOAD_DIR=$DOWNLOAD_DIR"
   echo "TRIM_APPNAME=$TRIM_APPNAME"
+  echo "TRIM_TOKEN_FILE=$TOKEN_FILE"
   echo "TRIM_API_TOKEN_LEN=${#TRIM_API_TOKEN}"
   echo ""
   echo "-- token file --"
-  ls -la /app/.trim_token 2>/dev/null || echo "  not found"
+  if [ -d "$TOKEN_FILE" ]; then
+    echo "  $TOKEN_FILE: ERROR 是目录！不是文件"
+  elif [ -f "$TOKEN_FILE" ]; then
+    echo "  $TOKEN_FILE: 普通文件, 大小=$(wc -c < "$TOKEN_FILE") bytes"
+  else
+    echo "  $TOKEN_FILE: 不存在"
+  fi
+  echo ""
+  echo "-- cmd 诊断日志（宿主机 /var/apps/KGconcept/.cmd_diagnose.log）最新 20 行 --"
+  CMD_LOG="/var/apps/KGconcept/.cmd_diagnose.log"
+  if [ -f "$CMD_LOG" ]; then
+    tail -n 20 "$CMD_LOG" 2>/dev/null || echo "(无法读取)"
+  else
+    echo "  $CMD_LOG 不存在 → 说明 install_callback/config_callback/cmd/main 均未被执行！"
+  fi
   echo ""
   echo "-- socket --"
   if [ -S /var/run/trim_open_gateway_apiscope.socket ]; then

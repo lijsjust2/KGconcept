@@ -1,16 +1,38 @@
 #!/bin/bash
 
 ### This script is called after the application configuration is changed.
-### 把最新的 TRIM_API_TOKEN 持久化到文件（token 可能会轮换）。
+### 包括「访问权限」目录变更！飞牛会用最新的授权信息签发新的 TRIM_API_TOKEN 并注入。
+### 文档: https://developer.fnnas.com/api/calling/#接口调用认证
 
-TOKEN_FILE="${TRIM_APPDEST}/.trim_token"
+DEFAULT_APPDEST="/var/apps/KGconcept"
+APPDEST="${TRIM_APPDEST:-${DEFAULT_APPDEST}}"
+TOKEN_FILE="${APPDEST}/.trim_token"
+
+DIAGNOSE_LOG="${APPDEST}/.cmd_diagnose.log"
+ensure_log_dir() {
+    mkdir -p "$(dirname "${DIAGNOSE_LOG}")" 2>/dev/null || true
+}
+log_diag() {
+    ensure_log_dir
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [config_callback:$1] $2" >> "${DIAGNOSE_LOG}" 2>/dev/null || true
+}
+log_diag "start" "TRIM_APPDEST(injected)='${TRIM_APPDEST}' APPDEST(used)='${APPDEST}' TRIM_API_TOKEN_LEN='${#TRIM_API_TOKEN}'"
+
+# 强制 TOKEN_FILE 是普通文件而不是目录
+if [ -d "${TOKEN_FILE}" ]; then
+    log_diag "token" "WARNING: ${TOKEN_FILE} 是目录（docker 误创建），删除并重建为文件"
+    rm -rf "${TOKEN_FILE}" 2>/dev/null
+fi
+mkdir -p "$(dirname "${TOKEN_FILE}")" 2>/dev/null || true
+[ -e "${TOKEN_FILE}" ] || : > "${TOKEN_FILE}"
 
 if [ -n "${TRIM_API_TOKEN}" ]; then
     echo "${TRIM_API_TOKEN}" > "${TOKEN_FILE}"
     chmod 600 "${TOKEN_FILE}" 2>/dev/null
-    echo "[$(date)] config_callback: TRIM_API_TOKEN 已写入 ${TOKEN_FILE} (长度: ${#TRIM_API_TOKEN})"
+    log_diag "token" "✅ TRIM_API_TOKEN 已写入 (长度=${#TRIM_API_TOKEN}) —— 用户改访问权限后通常走这里"
 else
-    echo "[$(date)] config_callback: TRIM_API_TOKEN 为空，未写入"
+    log_diag "token" "⚠️  TRIM_API_TOKEN 环境变量为空，未写入"
+    [ -s "${TOKEN_FILE}" ] || : > "${TOKEN_FILE}"
 fi
 
 exit 0

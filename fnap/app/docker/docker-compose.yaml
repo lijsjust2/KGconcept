@@ -12,11 +12,14 @@ services:
       - "/vol1:/vol1"
       # 3) 飞牛 OpenAPI Unix Socket：后端 Node 用来查询授权目录列表
       - "/var/run/trim_open_gateway_apiscope.socket:/var/run/trim_open_gateway_apiscope.socket"
-      # 4) TRIM_API_TOKEN 持久化文件：飞牛在执行 cmd/main 时把 token 写入此文件，
-      #    docker-entrypoint.sh 启动时读取 /app/.trim_token 并 export 到环境变量。
-      #    （appcenter 启动 docker-compose 时不会把 env 直接注入容器，所以必须通过文件中转）
-      - "/var/apps/KGconcept/.trim_token:/app/.trim_token:ro"
+      # 4) ✅ 改为挂载整个应用安装目录（只读），解决单文件挂载时 docker 误创建目录的致命问题
+      #    - 飞牛 cmd/* 脚本把最新 token 写入 /var/apps/KGconcept/.trim_token
+      #    - 挂载整个目录后，脚本后续写入/更新的文件（包括新增的）容器里立刻可见，无需重启
+      #    - 同时还能读取 .cmd_diagnose.log 诊断日志确认脚本是否真的被执行
+      - "/var/apps/KGconcept:/var/apps/KGconcept:ro"
     environment:
       - FNOS_ENV=true
       - DOWNLOAD_DIR=/app/downloads
       - TRIM_APPNAME=KGconcept
+      # 显式传 TOKEN_FILE_PATH，让后端和 entrypoint 都用同一个路径
+      - TRIM_TOKEN_FILE=/var/apps/KGconcept/.trim_token

@@ -142,48 +142,74 @@ async function consturctServer(moduleDefs) {
   const http = require('http');
 
   // TRIM_API_TOKEN 获取（三重保障 + 文件变更实时刷新）
-  // 文档: https://developer.fnnas.com/api/authorization/overview/
-  //   - token 在飞牛执行 cmd/* / install_callback / config_callback 时通过环境变量注入
-  //   - 我们在这些脚本里把 token 持久化到 ${TRIM_APPDEST}/.trim_token 文件
-  //   - docker-compose 把该文件挂载到容器内 /app/.trim_token
+  // 文档: https://developer.fnnas.com/api/calling/#接口调用认证
+  //   - 飞牛调用 cmd/* / install_callback / config_callback 脚本时，会把当前可用 token 注入
+  //     TRIM_API_TOKEN 环境变量，并注入 TRIM_APPDEST（应用安装目录）。
+  //   - 我们在这些脚本里，把 token 写入 ${TRIM_APPDEST}/.trim_token（默认 /var/apps/KGconcept/.trim_token）。
+  //   - docker-compose 挂载整个 /var/apps/KGconcept 目录（只读）进容器，避免单文件挂载时
+  //     docker 误创建空目录占位的致命 bug。
   // 策略:
   //   1) 启动时优先读 process.env.TRIM_API_TOKEN
-  //   2) 读 /app/.trim_token 文件（即使 env 有也要读，防止文件里是更新的 token）
-  //   3) 每 5 秒检查一次 token 文件，内容有变化就立即覆盖，
-  //      这样用户改"访问权限"后 config_callback 写的新 token 能立刻生效，不用重启容器
+  //   2) 读 TRIM_TOKEN_FILE（env 可配置，默认 /var/apps/KGconcept/.trim_token）
+  //   3) 每 5 秒 + 每次 fnos 请求进入时，检查 token 文件 mtime/内容变化，有更新立刻重载
   let TRIM_API_TOKEN = process.env.TRIM_API_TOKEN || '';
   let TOKEN_FILE_LAST_MTIME = 0;
   let TOKEN_FILE_LAST_LEN = -1;
-  const TOKEN_FILE_PATH = '/app/.trim_token';
+  let TOKEN_FILE_LAST_ERR = null;
+  let TOKEN_FILE_LAST_STAT = null; // 'file' | 'dir' | 'missing' | 'other'
+  const TOKEN_FILE_PATH =
+    process.env.TRIM_TOKEN_FILE ||
+    '/var/apps/KGconcept/.trim_token';  // 与 fnap/cmd/* 和 docker-compose 保持一致
 
   const refreshTokenFromFile = (forceLog = false) => {
     if (!fs.existsSync(TOKEN_FILE_PATH)) {
+      TOKEN_FILE_LAST_STAT = 'missing';
+      TOKEN_FILE_LAST_ERR = `文件不存在: ${TOKEN_FILE_PATH}`;
       if (forceLog) console.warn('[FNOS] TOKEN_FILE 不存在:', TOKEN_FILE_PATH);
       return false;
     }
     try {
       const stat = fs.statSync(TOKEN_FILE_PATH);
+      // 关键：区分文件 vs 目录（docker 单文件挂载时，如果宿主机文件不存在，docker 会创建空目录）
+      if (stat.isDirectory()) {
+        TOKEN_FILE_LAST_STAT = 'dir';
+        TOKEN_FILE_LAST_ERR = `${TOKEN_FILE_PATH} 是目录（docker 误创建的空目录，不是真实 token 文件）`;
+        if (forceLog) console.error('[FNOS] FATAL: TOKEN_FILE 是目录，不是文件！', TOKEN_FILE_PATH);
+        return false;
+      }
+      if (!stat.isFile()) {
+        TOKEN_FILE_LAST_STAT = 'other';
+        TOKEN_FILE_LAST_ERR = `${TOKEN_FILE_PATH} 不是普通文件（${stat.mode}）`;
+        return false;
+      }
+      TOKEN_FILE_LAST_STAT = 'file';
+      TOKEN_FILE_LAST_ERR = null;
+
       const fileContent = fs.readFileSync(TOKEN_FILE_PATH, 'utf8').trim();
-      // 只要 mtime 或 长度 变了，就认为 token 更新了，立即重载
       const changed =
         stat.mtimeMs !== TOKEN_FILE_LAST_MTIME ||
         fileContent.length !== TOKEN_FILE_LAST_LEN ||
         fileContent !== TRIM_API_TOKEN;
-      if (changed && fileContent) {
-        TRIM_API_TOKEN = fileContent;
+      if (changed) {
+        if (fileContent) {
+          TRIM_API_TOKEN = fileContent;
+          console.log(
+            '[FNOS] TRIM_API_TOKEN 已从文件刷新 (长度=' +
+              fileContent.length +
+              ', mtime=' +
+              new Date(stat.mtimeMs).toISOString() +
+              ', path=' + TOKEN_FILE_PATH + ')'
+          );
+        } else if (forceLog) {
+          console.warn('[FNOS] TOKEN_FILE 存在但内容为空 (0 字节)');
+        }
         TOKEN_FILE_LAST_MTIME = stat.mtimeMs;
         TOKEN_FILE_LAST_LEN = fileContent.length;
-        console.log(
-          '[FNOS] TRIM_API_TOKEN 已从文件刷新 (长度=' +
-            fileContent.length +
-            ', mtime=' +
-            new Date(stat.mtimeMs).toISOString() +
-            ')'
-        );
-        return true;
+        return fileContent ? true : false;
       }
     } catch (e) {
-      console.warn('[FNOS] 读取 token 文件失败:', e.message);
+      TOKEN_FILE_LAST_ERR = `${e.code || 'ERR'}: ${e.message}`;
+      console.warn('[FNOS] 读取 token 文件失败:', e.code, e.message);
     }
     return false;
   };
@@ -208,7 +234,9 @@ async function consturctServer(moduleDefs) {
   console.log('  FNOS_SOCKET_PATH      :', FNOS_SOCKET_PATH);
   console.log('  Socket exists?        :', fs.existsSync(FNOS_SOCKET_PATH) ? 'YES' : 'NO');
   console.log('  DOWNLOAD_DIR exists?  :', fs.existsSync(DOWNLOAD_DIR) ? 'YES' : 'NO');
-  console.log('  TOKEN_FILE_PATH       :', TOKEN_FILE_PATH, 'exists:', fs.existsSync(TOKEN_FILE_PATH) ? 'YES' : 'NO');
+  console.log('  TOKEN_FILE_PATH       :', TOKEN_FILE_PATH);
+  console.log('  TOKEN_FILE stat       :', TOKEN_FILE_LAST_STAT, TOKEN_FILE_LAST_ERR ? `(ERR: ${TOKEN_FILE_LAST_ERR})` : '');
+  console.log('  TOKEN_FILE length     :', TOKEN_FILE_LAST_LEN < 0 ? '(未读取)' : `${TOKEN_FILE_LAST_LEN} bytes`);
   console.log('========================================');
 
   // 飞牛路由统一挂到 Router 上，然后同时暴露 /fnos/* 和 /api/fnos/* 两个前缀
@@ -341,6 +369,10 @@ async function consturctServer(moduleDefs) {
     fnosEnv: FNOS_ENV,
     downloadDir: DOWNLOAD_DIR,
     tokenFileExists: fs.existsSync(TOKEN_FILE_PATH),
+    tokenFilePath: TOKEN_FILE_PATH,
+    tokenFileStat: TOKEN_FILE_LAST_STAT,
+    tokenFileError: TOKEN_FILE_LAST_ERR,
+    tokenFileLen: TOKEN_FILE_LAST_LEN,
   });
 
   // 查询管理员为应用授权的共享目录列表

@@ -3,24 +3,55 @@
 # KGconcept 应用运行控制脚本
 # Docker 容器由飞牛 appcenter 通过 config/resource 的 docker-project 声明自动管理。
 #
-# 注意：appcenter 启动 docker-compose 时，不会把 TRIM_API_TOKEN 注入到容器环境里。
-# 所以这里在 start/status 被调用时（飞牛会执行 cmd/main 脚本，并把 TRIM_API_TOKEN 作为 env 注入），
-# 把 token 写入到应用安装目录下的 .trim_token 文件，
-# 再由 docker-compose 把这个文件挂载进容器，最后容器的 entrypoint 读取文件设置环境变量。
+# 文档: https://developer.fnnas.com/api/calling/#接口调用认证
+#   - 飞牛调用 cmd/* 脚本时，会把当前可用 token 注入环境变量 TRIM_API_TOKEN
+#   - 飞牛调用应用脚本时还会注入 TRIM_APPDEST（应用安装目录）
+#   - 我们把 token 写入应用目录下的 .trim_token 文件，再由 docker-compose 挂载进容器
+#
+# 注：appcenter 启动 docker-compose 时，不会把 TRIM_API_TOKEN 注入容器环境变量，
+#     所以只能通过文件中转。
 
-APPDEST="${TRIM_APPDEST}"
+# ===== 关键兜底：确保 TRIM_APPDEST 一定有值 =====
+# 飞牛文档说脚本执行时会注入 TRIM_APPDEST，但万一没注入，就用飞牛默认安装路径
+DEFAULT_APPDEST="/var/apps/KGconcept"
+APPDEST="${TRIM_APPDEST:-${DEFAULT_APPDEST}}"
 TOKEN_FILE="${APPDEST}/.trim_token"
+
+# ===== 诊断日志（无论执行什么操作都留痕）=====
+DIAGNOSE_LOG="${APPDEST}/.cmd_diagnose.log"
+ensure_log_dir() {
+    mkdir -p "$(dirname "${DIAGNOSE_LOG}")" 2>/dev/null || true
+}
+log_diag() {
+    ensure_log_dir
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [cmd/main:$1] $2" >> "${DIAGNOSE_LOG}" 2>/dev/null || true
+}
+log_diag "start" "TRIM_APPDEST(injected)='${TRIM_APPDEST}' APPDEST(used)='${APPDEST}' TRIM_API_TOKEN_LEN='${#TRIM_API_TOKEN}'"
 
 FILE_PATH="${APPDEST}/docker/docker-compose.yaml"
 
 # 把 TRIM_API_TOKEN 写入应用目录下的文件（如果 env 里存在 token）
 persist_trim_token() {
+    # 关键：确保 TOKEN_FILE 是**普通文件**而不是目录
+    # docker 挂载文件时如果宿主机文件不存在，docker 会创建空目录代替，导致后续写入/读取全失败
+    if [ -d "${TOKEN_FILE}" ]; then
+        log_diag "token" "WARNING: ${TOKEN_FILE} 是目录（docker 误创建的），删除并重建为文件"
+        rm -rf "${TOKEN_FILE}" 2>/dev/null
+    fi
+    mkdir -p "$(dirname "${TOKEN_FILE}")" 2>/dev/null || true
+    # 如果文件不存在，先 touch 一个，保证 docker-compose 挂载时不会误创建目录
+    [ -e "${TOKEN_FILE}" ] || : > "${TOKEN_FILE}"
+
     if [ -n "${TRIM_API_TOKEN}" ]; then
         echo "${TRIM_API_TOKEN}" > "${TOKEN_FILE}"
         chmod 600 "${TOKEN_FILE}" 2>/dev/null
-        echo "[$(date)] TRIM_API_TOKEN 已写入 ${TOKEN_FILE} (长度: ${#TRIM_API_TOKEN})"
+        log_diag "token" "✅ TRIM_API_TOKEN 已写入 (长度=${#TRIM_API_TOKEN})"
+        return 0
     else
-        echo "[$(date)] 警告: TRIM_API_TOKEN 环境变量为空，未写入 token 文件"
+        log_diag "token" "⚠️  TRIM_API_TOKEN 环境变量为空，未写入 token 文件"
+        # 留一个标记文件，至少让 docker 挂载时不会误创建为目录
+        [ -s "${TOKEN_FILE}" ] || : > "${TOKEN_FILE}"
+        return 1
     fi
 }
 
@@ -41,11 +72,13 @@ is_docker_running () {
 case $1 in
 start)
     # 飞牛 appcenter 会自动启动 Docker 容器，这里只负责把 token 持久化
+    log_diag "cmd" "执行 start，写入 token 后退出（Docker 由 appcenter 管理）"
     persist_trim_token
     exit 0
     ;;
 stop)
     # 飞牛 appcenter 会自动停止容器
+    log_diag "cmd" "执行 stop，直接退出"
     exit 0
     ;;
 status)
@@ -54,12 +87,15 @@ status)
 
     # 通过 docker inspect 查容器状态
     if is_docker_running; then
+        log_diag "cmd" "执行 status，Docker 容器运行中"
         exit 0
     else
+        log_diag "cmd" "执行 status，Docker 容器未运行"
         exit 3
     fi
     ;;
 *)
+    log_diag "cmd" "未知参数: $1"
     exit 1
     ;;
 esac
