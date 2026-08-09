@@ -293,15 +293,19 @@ async function consturctServer(moduleDefs) {
     });
   });
 
+  // 诊断：把当前环境信息压缩到 /fnos/shared-folders 响应里，便于用户直接在前端看到问题
+  const buildEnvSnapshot = () => ({
+    socketExists: fs.existsSync(FNOS_SOCKET_PATH),
+    socketPath: FNOS_SOCKET_PATH,
+    trimAppName: TRIM_APPNAME,
+    tokenLength: TRIM_API_TOKEN.length,
+    tokenPresent: !!TRIM_API_TOKEN,
+    fnosEnv: FNOS_ENV,
+    downloadDir: DOWNLOAD_DIR,
+    tokenFileExists: fs.existsSync(TOKEN_FILE_PATH),
+  });
+
   // 查询管理员为应用授权的共享目录列表（严格按飞牛"访问权限"的勾选结果）
-  //
-  // 数据源优先级（严格，绝不扫描子目录瞎猜）：
-  //   1) trim.file.getSharedAccessibleFolders  → 飞牛后台精确返回用户在"访问权限"里勾选的目录
-  //      文档: https://developer.fnnas.com/api/authorization/shared-access/#查询共享授权路径
-  //      这是唯一可信来源。如果调用失败，说明 TRIM_API_TOKEN 或 socket 有问题。
-  //   2) 应用自身的 data-share 目录（/var/apps/KGconcept/shares/KGconcept 下的直接子目录）
-  //      → 这是 config/resource 的 shares 声明里应用自带的共享目录
-  //      飞牛会自动把它们挂到容器，用户在"访问权限"面板里也能看到
   fnosRouter.get('/shared-folders', async (req, res) => {
     const folders = [];
     const seenPaths = new Set();
@@ -312,11 +316,9 @@ async function consturctServer(moduleDefs) {
     };
 
     // (1) 应用自身共享目录（config/resource 声明的 shares）
-    //     固定先加默认下载 DOWNLOAD_DIR（即 KGconcept/downloads）
     if (DOWNLOAD_DIR) {
       addFolder(DOWNLOAD_DIR, 'data-share', '默认下载目录 (应用共享)');
     }
-    // 父级 KGconcept 目录（DOWNLOAD_DIR/../）也可能被声明为 share
     try {
       const appShareRoot = DOWNLOAD_DIR
         ? path.resolve(DOWNLOAD_DIR, '..')
@@ -326,31 +328,32 @@ async function consturctServer(moduleDefs) {
       }
     } catch (_) {}
 
+    let debug = { ...buildEnvSnapshot(), openApiCall: null, convertCall: null };
+
     if (!FNOS_ENV) {
-      return res.json({ code: 0, msg: '', data: { paths: folders } });
+      return res.json({ code: 0, msg: '', data: { paths: folders }, _debug: debug });
     }
 
     // (2) 调用飞牛官方后端 API：trim.file.getSharedAccessibleFolders
-    //     严格使用这个结果 — 用户在"访问权限"里勾选了哪几个，这里就返回哪几个，
-    //     不做任何文件系统扫描，不猜任何子目录。
     let rawPaths = [];
     try {
-      console.log('[FNOS] 调用 trim.file.getSharedAccessibleFolders（严格查询访问权限目录）...');
+      console.log('[FNOS] >>> 调用 trim.file.getSharedAccessibleFolders');
       const apiResp = await fnosOpenApi('trim.file.getSharedAccessibleFolders');
-      console.log('[FNOS] getSharedAccessibleFolders 返回:', JSON.stringify(apiResp));
+      debug.openApiCall = { success: true, response: apiResp };
+      console.log('[FNOS] <<< getSharedAccessibleFolders 返回:', JSON.stringify(apiResp));
 
       if (apiResp?.code === 0 && Array.isArray(apiResp?.data?.paths)) {
         rawPaths = apiResp.data.paths;
+        console.log('[FNOS] OpenAPI 拿到授权目录数量=', rawPaths.length, rawPaths);
       } else {
-        console.warn('[FNOS] getSharedAccessibleFolders 返回 code=%s msg=%s', apiResp?.code, apiResp?.msg);
-        // 返回结构不符合预期，继续往下走（有 data-share 的目录保底）
+        console.warn('[FNOS] OpenAPI 返回非正常: code=', apiResp?.code, 'msg=', apiResp?.msg);
       }
     } catch (e) {
-      console.warn('[FNOS] getSharedAccessibleFolders 调用失败:', e.message);
-      console.warn('[FNOS] 请检查: TRIM_API_TOKEN 长度=', TRIM_API_TOKEN.length, ' Socket 存在=', fs.existsSync(FNOS_SOCKET_PATH));
+      debug.openApiCall = { success: false, error: e.message };
+      console.warn('[FNOS] getSharedAccessibleFolders 调用异常:', e.message);
     }
 
-    // (3) 把 rawPaths 里的路径转成友好显示名称
+    // (3) 友好名称转换
     let pathMap = {};
     if (rawPaths.length > 0) {
       try {
@@ -358,24 +361,26 @@ async function consturctServer(moduleDefs) {
           path: rawPaths,
           language: 'zh-CN',
         });
+        debug.convertCall = { success: true, response: convertResp };
         if (convertResp?.code === 0 && Array.isArray(convertResp?.data?.result)) {
           for (const item of convertResp.data.result) {
             pathMap[item.path] = item.semanticPath || item.path;
           }
         }
       } catch (e) {
-        console.warn('[FNOS] convertPath 失败，用原始路径作为 label:', e.message);
+        debug.convertCall = { success: false, error: e.message };
       }
     }
     for (const p of rawPaths) {
       addFolder(p, 'app-authorization', pathMap[p] || p);
     }
 
-    console.log('[FNOS] 本次刷新返回目录列表（严格来自 data-share + getSharedAccessibleFolders）:');
+    console.log('[FNOS] 最终返回:');
     for (const f of folders) {
-      console.log(`  - [${f.source}] ${f.label}  →  ${f.path}`);
+      console.log(`  - [${f.source}] ${f.label}  ->  ${f.path}`);
     }
-    res.json({ code: 0, msg: '', data: { paths: folders } });
+
+    res.json({ code: 0, msg: '', data: { paths: folders }, _debug: debug });
   });
 
   // 诊断端点：返回飞牛环境配置和 socket/token 状态，便于排查

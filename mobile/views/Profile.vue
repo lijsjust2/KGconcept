@@ -125,6 +125,25 @@
                 </div>
               </div>
             </div>
+
+            <!-- 诊断信息：如果 OpenAPI 调用失败或返回为0条，显示调试信息 -->
+            <div v-if="fnosDebug" class="fnos-debug-box">
+              <div class="fnos-debug-title">🔧 诊断（仅开发调试用）</div>
+              <div class="fnos-debug-row"><span>Socket:</span><b class="fnos-debug-{{ fnosDebug.socketExists ? 'ok' : 'err' }}">{{ fnosDebug.socketExists ? 'OK' : 'MISSING' }}</b></div>
+              <div class="fnos-debug-row"><span>Token:</span><b class="fnos-debug-{{ fnosDebug.tokenPresent ? 'ok' : 'err' }}">{{ fnosDebug.tokenPresent ? 'OK(len=' + fnosDebug.tokenLength + ')' : 'EMPTY' }}</b></div>
+              <div class="fnos-debug-row"><span>Token文件:</span><b class="fnos-debug-{{ fnosDebug.tokenFileExists ? 'ok' : 'err' }}">{{ fnosDebug.tokenFileExists ? '存在' : '不存在' }}</b></div>
+              <div v-if="fnosDebug.openApiCall" class="fnos-debug-row">
+                <span>OpenAPI:</span>
+                <b v-if="fnosDebug.openApiCall.success && fnosDebug.openApiCall.response?.code === 0" class="fnos-debug-ok">成功, 返回{{ fnosDebug.openApiCall.response.data.paths?.length || 0 }}条</b>
+                <b v-else-if="fnosDebug.openApiCall.success" class="fnos-debug-err">code={{ fnosDebug.openApiCall.response?.code }} msg={{ fnosDebug.openApiCall.response?.msg }}</b>
+                <b v-else class="fnos-debug-err">异常: {{ fnosDebug.openApiCall.error }}</b>
+              </div>
+              <details class="fnos-debug-details">
+                <summary>查看 OpenAPI 原始响应</summary>
+                <pre>{{ JSON.stringify(fnosDebug, null, 2) }}</pre>
+              </details>
+            </div>
+
           </div>
 
           <div class="fnos-modal-foot">
@@ -214,6 +233,7 @@ const { t } = useI18n()
 // 下载目录状态
 const fnosFolders = ref([])
 const fnosLoadingFolders = ref(false)
+const fnosDebug = ref(null)
 const selectedFolder = ref('')
 
 // 文件夹选择弹窗
@@ -222,9 +242,14 @@ const tempSelectedFolder = ref('')
 
 const loadFnosFolders = async () => {
   fnosLoadingFolders.value = true
+  fnosDebug.value = null
   try {
-    const list = await getSharedFolders()
+    // getSharedFolders 返回 { code, msg, data: { paths: [...] }, _debug?: {...} }
+    const resp = await getSharedFolders()
+    const list = Array.isArray(resp) ? resp : (resp?.data?.paths || [])
     fnosFolders.value = list
+    fnosDebug.value = resp?._debug || null
+    console.log('[Profile] loadFnosFolders debug:', fnosDebug.value)
     // 如果没有已选，默认用 data-share 的默认目录
     if (!selectedFolder.value && list.length > 0) {
       const saved = getSavedDownloadFolder()
@@ -1782,5 +1807,54 @@ onMounted(async () => {
     padding-left: 16px;
     padding-right: 16px;
   }
+}
+
+/* 诊断框样式 */
+.fnos-debug-box {
+  margin-top: 18px;
+  padding: 12px 14px;
+  background: #1f2937;
+  color: #e5e7eb;
+  border-radius: 10px;
+  font-family: 'Consolas', 'Menlo', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.fnos-debug-title {
+  color: #fbbf24;
+  font-weight: 700;
+  margin-bottom: 8px;
+  letter-spacing: 0.5px;
+}
+.fnos-debug-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+  border-bottom: 1px dashed #374151;
+}
+.fnos-debug-row:last-child { border-bottom: none; }
+.fnos-debug-row span { color: #9ca3af; }
+.fnos-debug-ok { color: #10b981; }
+.fnos-debug-err { color: #ef4444; }
+.fnos-debug-details {
+  margin-top: 8px;
+  background: #111827;
+  border-radius: 6px;
+  padding: 6px 8px;
+  max-height: 240px;
+  overflow: auto;
+}
+.fnos-debug-details summary {
+  cursor: pointer;
+  color: #60a5fa;
+  outline: none;
+}
+.fnos-debug-details pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 11px;
+  color: #d1d5db;
 }
 </style>
