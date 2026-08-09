@@ -164,12 +164,10 @@ async function consturctServer(moduleDefs) {
       };
 
       try {
-        const { url, fileName, artist, album } = req.body || {};
+        const { url, fileName, artist, album, categorize } = req.body || {};
         if (!url || !fileName) {
           return res.status(400).json({ code: 1, msg: '缺少 url 或 fileName 参数' });
         }
-        const safeArtist = sanitize(artist || '未知歌手');
-        const safeAlbum = sanitize(album || '未知专辑');
         const safeFileName = sanitize(fileName);
 
         // 关键诊断：检查 DOWNLOAD_DIR 是否真实可写
@@ -185,7 +183,16 @@ async function consturctServer(moduleDefs) {
           }
         }
 
-        const dir = path.join(DOWNLOAD_DIR, safeArtist, safeAlbum);
+        // 仅批量下载（/download/ 页面，categorize=true）按 歌手/专辑 分类；
+        // 单曲及其他列表下载直接放到根目录，不再分类
+        let dir = DOWNLOAD_DIR;
+        let relativePath = safeFileName;
+        if (categorize) {
+          const safeArtist = sanitize(artist || '未知歌手');
+          const safeAlbum = sanitize(album || '未知专辑');
+          dir = path.join(DOWNLOAD_DIR, safeArtist, safeAlbum);
+          relativePath = path.join(safeArtist, safeAlbum, safeFileName);
+        }
         await fs.promises.mkdir(dir, { recursive: true });
 
         const filePath = path.join(dir, safeFileName);
@@ -209,7 +216,6 @@ async function consturctServer(moduleDefs) {
           response.data.on('error', reject);
         });
 
-        const relativePath = path.join(safeArtist, safeAlbum, safeFileName);
         const absPath = filePath;
         let fileSize = -1;
         try { fileSize = (await fs.promises.stat(absPath)).size; } catch (__) {}

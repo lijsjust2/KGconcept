@@ -49,18 +49,20 @@ export function getFnosStatus() {
 
 /**
  * 在飞牛环境下，通过后端下载文件到共享目录
- * 文件按 歌手/专辑/文件名 组织存储
  * @param {string} url 音频文件下载URL
  * @param {string} fileName 保存的文件名
- * @param {string} artist 歌手名
- * @param {string} album 专辑名
+ * @param {string} artist 歌手名（仅 categorize=true 时使用）
+ * @param {string} album 专辑名（仅 categorize=true 时使用）
+ * @param {boolean} [categorize=false] 是否按「歌手/专辑」分类存储
+ *   - true：批量下载（/download/ 页面）按「歌手/专辑/文件名」分类
+ *   - false（默认）：单曲及其他列表下载直接放到根目录，不分类
  * @returns {Promise<{success: boolean, path?: string, msg?: string}>}
  */
-export async function downloadToFnos(url, fileName, artist, album) {
+export async function downloadToFnos(url, fileName, artist, album, categorize = false) {
   try {
     const res = await post(
       '/fnos/download',
-      { url, fileName, artist, album },
+      { url, fileName, artist, album, categorize },
       { timeout: 120000 }
     )
     if (res?.code === 0) {

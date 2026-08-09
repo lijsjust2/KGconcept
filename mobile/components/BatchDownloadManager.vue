@@ -518,7 +518,7 @@ const downloadSong = async (song, quality) => {
                 const ext = currentQuality === 'flac' ? 'flac' : 'mp3';
                 const fnosFileName = `${songName} - ${artist} [${currentQuality}].${ext}`;
                 
-                const fnosResult = await downloadToFnos(downloadUrl, fnosFileName, artist, album);
+                const fnosResult = await downloadToFnos(downloadUrl, fnosFileName, artist, album, true);
                 if (!fnosResult.success) {
                     throw new Error(fnosResult.msg || '飞牛下载失败');
                 }
