@@ -292,6 +292,63 @@ async function consturctServer(moduleDefs) {
       throw lastErr || new Error('所有音质尝试失败');
     };
 
+    // 发送批次下载完成通知（PushPlus）
+    const sendBatchCompletionNotification = async (batchId) => {
+      const batch = batches.get(batchId);
+      if (!batch || !batch.pushplusToken) return;
+
+      const batchTasks = taskHistory.filter(t => t.batchId === batchId);
+      const successList = batchTasks.filter(t => t.status === 'success');
+      const failedList = batchTasks.filter(t => t.status === 'failed');
+      const totalCount = batchTasks.length;
+      const quality = batch.quality;
+
+      // 格式化 Markdown 内容
+      let content = `## 总下载歌曲：${totalCount}首，音质${quality}\n\n`;
+      content += `**成功下载${successList.length}首，失败${failedList.length}首**\n\n`;
+
+      if (successList.length > 0) {
+        const groups = {};
+        for (const item of successList) {
+          const album = item.song.album || '未知专辑';
+          const safeAlbum = album.trim() || '未知专辑';
+          if (!groups[safeAlbum]) groups[safeAlbum] = [];
+          groups[safeAlbum].push(item.song.name);
+        }
+        content += `---\n\n**成功下载的明细：**\n\n`;
+        let albumIndex = 1;
+        for (const [albumName, songNames] of Object.entries(groups)) {
+          content += `### ${albumIndex}、${albumName}\n\n`;
+          songNames.forEach((name, idx) => { content += `${idx + 1}. ${name}\n`; });
+          content += '\n';
+          albumIndex++;
+        }
+      }
+
+      if (failedList.length > 0) {
+        content += `---\n\n**失败的明细：**\n\n`;
+        failedList.forEach((item, index) => {
+          content += `${index + 1}. ${item.song.name}`;
+          if (item.error) content += ` (${item.error})`;
+          content += '\n';
+        });
+      }
+
+      try {
+        await axios.post('http://www.pushplus.plus/send', {
+          token: batch.pushplusToken,
+          title: `🎵 批量下载完成`,
+          content: content,
+          template: 'markdown',
+        }, { timeout: 15000 });
+        console.log(`[PushPlus] 批次 ${batchId} 推送成功`);
+      } catch (e) {
+        console.error(`[PushPlus] 批次 ${batchId} 推送失败:`, e.message);
+      }
+      // 避免重复推送
+      batch.pushplusToken = '';
+    };
+
     // 队列 worker：循环处理 pending 任务，关闭页面/飞牛不影响（容器进程持续运行）
     const processQueue = async () => {
       if (workerRunning) return;
@@ -333,6 +390,13 @@ async function consturctServer(moduleDefs) {
           // 裁剪历史
           while (taskHistory.length > MAX_HISTORY) taskHistory.shift();
 
+          // 检查该批次是否已全部完成（无 pending 且无 downloading）
+          const batchRemaining = taskQueue.some(t => t.batchId === task.batchId && (t.status === 'pending' || t.status === 'downloading'));
+          if (!batchRemaining) {
+            // 该批次已完成，发送推送
+            sendBatchCompletionNotification(task.batchId);
+          }
+
           // 下一首前延时防风控
           const hasNext = taskQueue.some(t => t.status === 'pending');
           if (hasNext) {
@@ -352,7 +416,7 @@ async function consturctServer(moduleDefs) {
     // 添加任务到队列
     app.post('/fnos/queue/add', async (req, res) => {
       try {
-        const { songs, quality, delayMin, delayMax } = req.body || {};
+        const { songs, quality, delayMin, delayMax, pushplusToken } = req.body || {};
         if (!Array.isArray(songs) || songs.length === 0) {
           return res.status(400).json({ code: 1, msg: '缺少 songs 参数' });
         }
@@ -368,6 +432,7 @@ async function consturctServer(moduleDefs) {
           quality: qualityVal,
           delayMin: Number(delayMin) || 1,
           delayMax: Number(delayMax) || 3,
+          pushplusToken: pushplusToken || '',
         });
 
         const now = Date.now();

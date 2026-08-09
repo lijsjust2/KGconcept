@@ -85,11 +85,11 @@ export async function downloadToFnos(url, fileName, artist, album, categorize = 
  * @param {number} delayMax 防风控最大延时（秒）
  * @returns {Promise<{success:boolean, batchId?:string, added?:number, msg?:string}>}
  */
-export async function addToDownloadQueue(songs, quality, delayMin = 1, delayMax = 3) {
+export async function addToDownloadQueue(songs, quality, delayMin = 1, delayMax = 3, pushplusToken = '') {
   try {
     const res = await post(
       '/fnos/queue/add',
-      { songs, quality, delayMin, delayMax },
+      { songs, quality, delayMin, delayMax, pushplusToken },
       { timeout: 30000 }
     )
     if (res?.code === 0) {

@@ -125,6 +125,7 @@ import {
     getQualityDescription
 } from '../utils/qualityConfig';
 import { checkFnosEnv, getFnosStatus, downloadToFnos, addToDownloadQueue } from '../utils/fnos';
+import { getPushplusToken } from '../utils/pushplus';
 import message from '../utils/message';
 
 const sanitizeFileName = (name) => {
@@ -334,11 +335,13 @@ const handleQualitySelect = async (quality) => {
         emit('download-start', props.songs, quality);
 
         try {
+            const pushplusToken = getPushplusToken();
             const result = await addToDownloadQueue(
                 props.songs,
                 quality,
                 props.downloadDelayMin,
-                props.downloadDelayMax
+                props.downloadDelayMax,
+                pushplusToken
             );
             if (result.success) {
                 message.success(`已加入下载队列，共 ${result.added} 首歌曲，关闭页面后任务仍会继续`);
