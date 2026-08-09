@@ -80,7 +80,7 @@ npm run install-all
 #### 方式一：从 Docker Hub 拉取镜像（推荐）
 ```bash
 # 自动适配架构（推荐）
-docker pull kgcc:latest
+docker pull lijsfun/kgcc:latest
 
 # 运行容器
 docker run -d \
@@ -88,16 +88,16 @@ docker run -d \
   --restart unless-stopped \
   -p 8880:8880 \
   -p 6521:6521 \
-  kgcc:latest
+  lijsfun/kgcc:latest
 ```
 
 如需指定特定架构：
 ```bash
 # AMD64 架构 (x86_64)
-docker pull kgcc:amd64-latest
+docker pull lijsfun/kgcc:amd64-latest
 
 # ARM64 架构 (aarch64)
-docker pull kgcc:arm64-latest
+docker pull lijsfun/kgcc:arm64-latest
 ```
 
 #### 方式二：Docker Compose 快速启动
@@ -126,7 +126,7 @@ docker run -d \
   --restart unless-stopped \
   -p 8880:8880 \
   -p 6521:6521 \
-  kgcc:amd64-版本号
+  lijsfun/kgcc:amd64-版本号
 ```
 运行 ARM64 架构
 ```bash
@@ -135,7 +135,7 @@ docker run -d \
   --restart unless-stopped \
   -p 8880:8880 \
   -p 6521:6521 \
-  kgcc:arm64-版本号
+  lijsfun/kgcc:arm64-版本号
 ```
 
 ---

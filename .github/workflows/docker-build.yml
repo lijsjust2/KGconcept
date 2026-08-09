@@ -70,8 +70,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            kgcc:${{ steps.version.outputs.version }}
-            ${{ steps.version.outputs.version != 'latest' && 'kgcc:latest' || '' }}
+            lijsfun/kgcc:${{ steps.version.outputs.version }}
+            ${{ steps.version.outputs.version != 'latest' && 'lijsfun/kgcc:latest' || '' }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
 
@@ -88,6 +88,7 @@ jobs:
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
           outputs: type=docker,dest=/tmp/kgcc-amd64.tar
+          # 离线镜像不做 namespace 前缀，fpk 内 docker-compose 引用 lijsfun/kgcc:latest
 
       - name: Build Docker image (ARM64) for tar export
         if: github.event.inputs.push_to_dockerhub != 'true'
@@ -258,9 +259,9 @@ jobs:
                ```
                将镜像重新 tag 为 latest（fpk 安装时引用此名称）：
                ```bash
-               docker tag kgcc:amd64-${{ steps.version.outputs.version }} kgcc:latest
+               docker tag kgcc:amd64-${{ steps.version.outputs.version }} lijsfun/kgcc:latest
                # 或
-               docker tag kgcc:arm64-${{ steps.version.outputs.version }} kgcc:latest
+               docker tag kgcc:arm64-${{ steps.version.outputs.version }} lijsfun/kgcc:latest
                ```
 
             2. **安装 fpk 应用包**
@@ -284,7 +285,7 @@ jobs:
               --name kgconcept \
               --restart unless-stopped \
               -p 8880:8880 \
-              kgcc:amd64-${{ steps.version.outputs.version }}
+              lijsfun/kgcc:amd64-${{ steps.version.outputs.version }}
             ```
             浏览器访问 `http://localhost:8880` 即可使用。
           draft: false
@@ -310,7 +311,7 @@ jobs:
             - `KGconcept-${{ steps.version.outputs.version }}.fpk` — 飞牛应用安装包
 
             #### Docker 镜像
-            - 已推送到 Docker Hub: `kgcc:${{ steps.version.outputs.version }}`
+            - 已推送到 Docker Hub: `lijsfun/kgcc:${{ steps.version.outputs.version }}`
             - 自动适配 AMD64 和 ARM64 架构
 
             ### 飞牛 fnOS 安装方法
@@ -328,12 +329,12 @@ jobs:
             ### Docker 直接使用（非飞牛环境）
 
             ```bash
-            docker pull kgcc:${{ steps.version.outputs.version }}
+            docker pull lijsfun/kgcc:${{ steps.version.outputs.version }}
             docker run -d \
               --name kgconcept \
               --restart unless-stopped \
               -p 8880:8880 \
-              kgcc:${{ steps.version.outputs.version }}
+              lijsfun/kgcc:${{ steps.version.outputs.version }}
             ```
             浏览器访问 `http://localhost:8880` 即可使用。
           draft: false
