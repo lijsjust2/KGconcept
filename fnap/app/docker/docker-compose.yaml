@@ -5,9 +5,15 @@ services:
     ports:
       - "8880:8880"
     volumes:
-      # data-share 声明的共享目录: KGconcept/downloads
-      # 飞牛自动创建路径: /var/apps/{appname}/shares/{share_name}
+      # data-share 声明的共享目录: KGconcept/downloads（默认下载位置）
       - "/var/apps/KGconcept/shares/KGconcept/downloads:/app/downloads"
+      # 挂载整个 /vol1：用户在"应用设置 → 访问权限"里添加的授权目录（/vol1/... 路径）
+      # 在容器内以相同路径可见，应用用户 ACL 由飞牛系统管理
+      - "/vol1:/vol1"
+      # 飞牛 OpenAPI Unix Socket：后端 Node 用来查询授权目录列表
+      - "/var/run/trim_open_gateway_apiscope.socket:/var/run/trim_open_gateway_apiscope.socket"
     environment:
       - FNOS_ENV=true
       - DOWNLOAD_DIR=/app/downloads
+      - TRIM_API_TOKEN=${TRIM_API_TOKEN}
+      - TRIM_APPNAME=KGconcept

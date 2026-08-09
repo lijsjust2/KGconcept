@@ -74,7 +74,7 @@ import {
   getQualityDescription 
 } from '../utils/qualityConfig'
 import message from '../utils/message'
-import { checkFnosEnv, downloadToFnos } from '../utils/fnos'
+import { checkFnosEnv, downloadToFnos, getSavedDownloadFolder } from '../utils/fnos'
 
 const router = useRouter()
 const MoeAuth = MoeAuthStore()
@@ -708,7 +708,7 @@ const triggerDownload = async (url, quality) => {
   if (fnosStatus.isFnos) {
     const artist = getSongArtist()
     const album = props.song.album_name || props.song.album || '未知专辑'
-    const result = await downloadToFnos(url, fileName, artist, album)
+    const result = await downloadToFnos(url, fileName, artist, album, false, getSavedDownloadFolder())
     if (result.success) {
       message.success(`已保存到飞牛共享目录: ${result.path}`)
     } else {

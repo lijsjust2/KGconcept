@@ -137,14 +137,96 @@ async function consturctServer(moduleDefs) {
   // ==================== 飞牛 fnOS 环境接口 ====================
   const FNOS_ENV = process.env.FNOS_ENV === 'true';
   const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || '';
+  const TRIM_API_TOKEN = process.env.TRIM_API_TOKEN || '';
+  const TRIM_APPNAME = process.env.TRIM_APPNAME || 'KGconcept';
+  const FNOS_SOCKET_PATH = process.env.FNOS_SOCKET_PATH || '/var/run/trim_open_gateway_apiscope.socket';
+  const http = require('http');
+
+  // 飞牛路由统一挂到 Router 上，然后同时暴露 /fnos/* 和 /api/fnos/* 两个前缀
+  // 本地开发靠 Vite proxy 把 /api/fnos/* 转成后端 /fnos/*；
+  // 飞牛容器内前端直接请求 /api/fnos/*，需要后端原生支持
+  const fnosRouter = express.Router();
+
+  // 通过飞牛 OpenAPI Unix Socket 调用后端能力
+  const fnosOpenApi = (req, data) => {
+    return new Promise((resolve, reject) => {
+      const payload = JSON.stringify({
+        reqId: String(Date.now() + Math.random()),
+        req,
+        appName: TRIM_APPNAME,
+        data: data || {},
+      });
+      const options = {
+        socketPath: FNOS_SOCKET_PATH,
+        path: '/api/v1/trimapp',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+          ...(TRIM_API_TOKEN ? { Authorization: `Bearer ${TRIM_API_TOKEN}` } : {}),
+        },
+      };
+      const hReq = http.request(options, (hRes) => {
+        let buf = '';
+        hRes.setEncoding('utf8');
+        hRes.on('data', (c) => (buf += c));
+        hRes.on('end', () => {
+          try { resolve(JSON.parse(buf)); } catch (e) { reject(new Error('非JSON响应: ' + buf.slice(0, 200))); }
+        });
+      });
+      hReq.on('error', reject);
+      hReq.write(payload);
+      hReq.end();
+    });
+  };
+
+  // 判断某个绝对路径是否位于 DOWNLOAD_DIR（共享目录）或已挂载的 /vol1 下
+  const isAllowedDownloadRoot = (abs) => {
+    const roots = [];
+    if (DOWNLOAD_DIR) roots.push(path.resolve(DOWNLOAD_DIR));
+    roots.push('/vol1');
+    const target = path.resolve(abs);
+    return roots.some((r) => {
+      const rp = path.resolve(r);
+      return target === rp || target.startsWith(rp.endsWith(path.sep) ? rp : rp + path.sep);
+    });
+  };
 
   // 飞牛环境状态查询
-  app.get('/fnos/status', (req, res) => {
+  fnosRouter.get('/status', (req, res) => {
     res.json({
       isFnos: FNOS_ENV,
       downloadDir: DOWNLOAD_DIR,
       enabled: FNOS_ENV && !!DOWNLOAD_DIR,
+      defaultDownloadDir: DOWNLOAD_DIR,
     });
+  });
+
+  // 查询管理员为应用授权的共享目录列表 + data-share 默认目录
+  fnosRouter.get('/shared-folders', async (req, res) => {
+    // 固定包含默认共享下载目录
+    const folders = [];
+    if (DOWNLOAD_DIR) {
+      folders.push({ path: DOWNLOAD_DIR, source: 'data-share', label: '默认下载目录 (应用共享)' });
+    }
+
+    if (!FNOS_ENV) {
+      return res.json({ code: 0, msg: '', data: { paths: folders } });
+    }
+
+    try {
+      const apiResp = await fnosOpenApi('trim.file.getSharedAccessibleFolders');
+      if (apiResp?.code === 0 && Array.isArray(apiResp?.data?.paths)) {
+        for (const p of apiResp.data.paths) {
+          if (!folders.some((f) => f.path === p)) {
+            folders.push({ path: p, source: 'app-authorization', label: p });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[FNOS] 查询共享授权目录失败:', e.message);
+    }
+    res.json({ code: 0, msg: '', data: { paths: folders } });
   });
 
   // 仅在飞牛环境下启用服务端下载到共享目录
@@ -155,8 +237,8 @@ async function consturctServer(moduleDefs) {
       .trim()
       .slice(0, 200);
 
-    // 下载文件到共享目录，按 歌手/专辑/文件名 组织
-    app.post('/fnos/download', async (req, res) => {
+    // 下载文件到共享目录
+    fnosRouter.post('/download', async (req, res) => {
       const logDownload = (msg) => {
         const ts = new Date().toISOString();
         const line = `[${ts}] ${msg}\n`;
@@ -164,41 +246,47 @@ async function consturctServer(moduleDefs) {
       };
 
       try {
-        const { url, fileName, artist, album, categorize } = req.body || {};
+        const { url, fileName, artist, album, categorize, targetPath } = req.body || {};
         if (!url || !fileName) {
           return res.status(400).json({ code: 1, msg: '缺少 url 或 fileName 参数' });
         }
         const safeFileName = sanitize(fileName);
 
-        // 关键诊断：检查 DOWNLOAD_DIR 是否真实可写
+        // 确定根目录：优先使用用户选择的 targetPath（必须在允许范围），否则回退 DOWNLOAD_DIR
+        let rootDir = DOWNLOAD_DIR;
+        if (targetPath && typeof targetPath === 'string' && targetPath.trim()) {
+          if (isAllowedDownloadRoot(targetPath)) {
+            rootDir = targetPath;
+          } else {
+            logDownload(`WARN: targetPath ${targetPath} 不在允许范围，回退到默认 DOWNLOAD_DIR`);
+          }
+        }
+
+        // 诊断：确认根目录可写
         try {
-          await fs.promises.access(DOWNLOAD_DIR, fs.constants.W_OK);
+          await fs.promises.access(rootDir, fs.constants.W_OK);
         } catch (e) {
-          // 尝试修复权限
           try {
-            await fs.promises.chmod(DOWNLOAD_DIR, 0o777);
-            await fs.promises.access(DOWNLOAD_DIR, fs.constants.W_OK);
+            await fs.promises.chmod(rootDir, 0o777);
+            await fs.promises.access(rootDir, fs.constants.W_OK);
           } catch (_) {
-            logDownload(`ERROR: DOWNLOAD_DIR ${DOWNLOAD_DIR} 不可写，挂载可能未生效。文件将写入容器内部层（重启即丢失）。`);
+            logDownload(`ERROR: rootDir ${rootDir} 不可写，挂载/授权可能未生效`);
           }
         }
 
         // 仅批量下载（/download/ 页面，categorize=true）按 歌手/专辑 分类；
         // 单曲及其他列表下载直接放到根目录，不再分类
-        let dir = DOWNLOAD_DIR;
-        let relativePath = safeFileName;
+        let dir = rootDir;
         if (categorize) {
           const safeArtist = sanitize(artist || '未知歌手');
           const safeAlbum = sanitize(album || '未知专辑');
-          dir = path.join(DOWNLOAD_DIR, safeArtist, safeAlbum);
-          relativePath = path.join(safeArtist, safeAlbum, safeFileName);
+          dir = path.join(rootDir, safeArtist, safeAlbum);
         }
         await fs.promises.mkdir(dir, { recursive: true });
 
         const filePath = path.join(dir, safeFileName);
         const response = await axios.get(url, { responseType: 'stream', timeout: 60000, maxRedirects: 5 });
 
-        // 真正写入前确认文件创建成功（catch 权限错误）
         const writer = fs.createWriteStream(filePath);
         let writeError = null;
         writer.on('error', (err) => {
@@ -217,11 +305,12 @@ async function consturctServer(moduleDefs) {
         });
 
         const absPath = filePath;
+        const relativePath = path.relative(rootDir, filePath) || safeFileName;
         let fileSize = -1;
         try { fileSize = (await fs.promises.stat(absPath)).size; } catch (__) {}
-        logDownload(`SUCCESS: 保存到本地绝对路径=${absPath} 相对路径=${relativePath} 大小=${fileSize}B`);
+        logDownload(`SUCCESS: root=${rootDir} 绝对路径=${absPath} 相对路径=${relativePath} 大小=${fileSize}B`);
         console.log('[FNOS] 文件已保存:', absPath, relativePath, `${fileSize}B`);
-        res.json({ code: 0, msg: '下载成功', data: { path: relativePath, absPath: absPath, size: fileSize } });
+        res.json({ code: 0, msg: '下载成功', data: { path: relativePath, absPath: absPath, size: fileSize, rootDir } });
       } catch (e) {
         console.error('[FNOS] 下载失败:', e.message);
         logDownload(`ERROR: 下载异常: ${e.message}`);
@@ -230,7 +319,7 @@ async function consturctServer(moduleDefs) {
     });
 
     // 列出已下载的音频文件
-    app.get('/fnos/downloads', async (req, res) => {
+    fnosRouter.get('/downloads', async (req, res) => {
       try {
         const results = [];
         const scanDir = async (dir, depth = 0) => {
@@ -254,6 +343,10 @@ async function consturctServer(moduleDefs) {
       }
     });
   }
+
+  // 同时挂载到 /fnos 和 /api/fnos，兼容本地开发与飞牛容器两种环境
+  app.use('/fnos', fnosRouter);
+  app.use('/api/fnos', fnosRouter);
 
   // Cache
   app.use(cache('2 minutes', (_, res) => res.statusCode === 200));

@@ -21,7 +21,106 @@
         </div>
       </div>
 
+      <!-- 飞牛 fnOS 下载目录设置 -->
+      <div class="fnos-settings-card">
+        <div class="fnos-card-head">
+          <div class="fnos-card-title">
+            <i class="fas fa-folder-open"></i>
+            <span>下载目录</span>
+          </div>
+          <button class="fnos-refresh-btn" @click="loadFnosFolders" :disabled="fnosLoadingFolders">
+            <i class="fas fa-sync" :class="{ 'fa-spin': fnosLoadingFolders }"></i>
+            <span>刷新</span>
+          </button>
+        </div>
 
+        <!-- 当前选中的路径 + 修改按钮 -->
+        <div class="fnos-current-path">
+          <div class="fnos-path-left">
+            <div class="fnos-path-label">当前保存位置</div>
+            <div class="fnos-path-value" v-if="selectedFolder">
+              <i class="fas fa-hdd"></i>
+              <span>{{ selectedFolder }}</span>
+            </div>
+            <div class="fnos-path-value fnos-path-empty" v-else-if="!fnosLoadingFolders">
+              <i class="fas fa-exclamation-triangle"></i>
+              <span>未设置，将使用默认目录</span>
+            </div>
+            <div class="fnos-path-value fnos-path-loading" v-else>
+              <i class="fas fa-spinner fa-spin"></i>
+              <span>加载中...</span>
+            </div>
+          </div>
+          <button
+            class="fnos-change-btn"
+            :disabled="fnosLoadingFolders || fnosFolders.length === 0"
+            @click="openFolderPicker"
+          >
+            <i class="fas fa-edit"></i>
+            <span>修改</span>
+          </button>
+        </div>
+
+        <div v-if="fnosFolders.length === 0 && !fnosLoadingFolders" class="fnos-hint">
+          暂无可用目录，请先到「飞牛应用设置 → 访问权限 → 添加文件夹」授权后再点刷新。
+        </div>
+
+        <div class="fnos-footnote">
+          <i class="fas fa-info-circle"></i>
+          <span>歌手ID批量下载会自动按「歌手/专辑」分类，单曲下载直接保存到目录根。</span>
+        </div>
+      </div>
+
+      <!-- 选择文件夹的模态框 -->
+      <div v-if="showFolderModal" class="fnos-modal-mask" @click.self="closeFolderPicker">
+        <div class="fnos-modal">
+          <div class="fnos-modal-head">
+            <h3>选择下载文件夹</h3>
+            <button class="fnos-modal-close" @click="closeFolderPicker">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+
+          <div class="fnos-modal-body">
+            <div class="fnos-modal-tip">
+              <i class="fas fa-shield-alt"></i>
+              <span>仅显示「飞牛应用设置 → 访问权限」中已授权的文件夹。</span>
+            </div>
+            <div class="fnos-folder-list">
+              <div
+                v-for="(folder, i) in fnosFolders"
+                :key="'modal_' + folder.path + '_' + i"
+                class="fnos-folder-item"
+                :class="{ selected: tempSelectedFolder === folder.path }"
+                @click="tempSelectedFolder = folder.path"
+              >
+                <div class="fnos-radio">
+                  <div v-if="tempSelectedFolder === folder.path" class="fnos-radio-dot"></div>
+                </div>
+                <div class="fnos-folder-info">
+                  <div class="fnos-folder-label">
+                    {{ folder.label }}
+                    <span v-if="folder.source === 'data-share'" class="fnos-tag fnos-tag-default">默认</span>
+                    <span v-else class="fnos-tag fnos-tag-auth">授权</span>
+                  </div>
+                  <div class="fnos-folder-path">{{ folder.path }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="fnos-modal-foot">
+            <button class="fnos-btn fnos-btn-ghost" @click="closeFolderPicker">取消</button>
+            <button
+              class="fnos-btn fnos-btn-primary"
+              :disabled="!tempSelectedFolder"
+              @click="confirmFolderPicker"
+            >
+              确定
+            </button>
+          </div>
+        </div>
+      </div>
 
       <!-- 固定标题 -->
       <div class="section-title">
@@ -84,10 +183,70 @@ import { MoeAuthStore } from '../stores/store'
 import { useI18n } from 'vue-i18n'
 import VipInfoModal from '../components/VipInfoModal.vue'
 import message from '../utils/message'
+import {
+  getSharedFolders,
+  getSavedDownloadFolder,
+  saveDownloadFolder,
+} from '../utils/fnos'
 
 const router = useRouter()
 const MoeAuth = MoeAuthStore()
 const { t } = useI18n()
+
+// 下载目录状态
+const fnosFolders = ref([])
+const fnosLoadingFolders = ref(false)
+const selectedFolder = ref('')
+
+// 文件夹选择弹窗
+const showFolderModal = ref(false)
+const tempSelectedFolder = ref('')
+
+const loadFnosFolders = async () => {
+  fnosLoadingFolders.value = true
+  try {
+    const list = await getSharedFolders()
+    fnosFolders.value = list
+    // 如果没有已选，默认用 data-share 的默认目录
+    if (!selectedFolder.value && list.length > 0) {
+      const saved = getSavedDownloadFolder()
+      const found = list.find((f) => f.path === saved)
+      if (found) {
+        selectedFolder.value = found.path
+      } else {
+        const def = list.find((f) => f.source === 'data-share') || list[0]
+        selectedFolder.value = def.path
+        saveDownloadFolder(def.path)
+      }
+    }
+  } catch (e) {
+    console.error('[Profile] 加载下载目录失败:', e)
+  } finally {
+    fnosLoadingFolders.value = false
+  }
+}
+
+// 打开选择文件夹弹窗：把当前已选作为临时选择
+const openFolderPicker = () => {
+  tempSelectedFolder.value = selectedFolder.value
+  showFolderModal.value = true
+}
+
+// 取消 / 关闭弹窗
+const closeFolderPicker = () => {
+  showFolderModal.value = false
+  tempSelectedFolder.value = ''
+}
+
+// 确认选择：只有点了确定才真正持久化
+const confirmFolderPicker = () => {
+  if (!tempSelectedFolder.value) return
+  selectedFolder.value = tempSelectedFolder.value
+  saveDownloadFolder(tempSelectedFolder.value)
+  message.success('下载目录已切换')
+  showFolderModal.value = false
+  tempSelectedFolder.value = ''
+}
 
 // VIP相关状态
 const showVipModal = ref(false)
@@ -285,11 +444,14 @@ const props = defineProps({
   playerControl: Object
 })
 
-onMounted(() => {
+onMounted(async () => {
   if (!MoeAuth.isAuthenticated) {
     router.push('/login')
     return
   }
+
+  // 始终加载下载目录列表（卡片始终显示，不依赖 isFnos 标志）
+  loadFnosFolders()
 
   getVipInfo()
   getUserDetails()
@@ -1101,6 +1263,448 @@ onMounted(() => {
 
   .album-image {
     height: 120px;
+  }
+}
+
+/* ===== fnOS 下载目录设置卡片 ===== */
+.fnos-settings-card {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 20px;
+  padding: 20px 24px;
+  margin-bottom: 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+
+.fnos-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.fnos-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+  font-weight: 700;
+  color: #333;
+}
+
+.fnos-card-title i {
+  color: #667eea;
+  font-size: 18px;
+}
+
+.fnos-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 16px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  color: #555;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.fnos-refresh-btn:hover:not(:disabled) {
+  background: #667eea;
+  color: #fff;
+  border-color: #667eea;
+}
+
+.fnos-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 当前路径行 */
+.fnos-current-path {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, #f5f7ff 0%, #faf5ff 100%);
+  border: 1px solid #e0e7ff;
+  border-radius: 14px;
+}
+
+.fnos-path-left {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.fnos-path-label {
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.fnos-path-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+  min-width: 0;
+}
+
+.fnos-path-value i {
+  color: #667eea;
+  flex-shrink: 0;
+}
+
+.fnos-path-value span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Consolas', 'Menlo', monospace;
+}
+
+.fnos-path-empty {
+  color: #b45309;
+}
+.fnos-path-empty i {
+  color: #f59e0b;
+}
+
+.fnos-path-loading {
+  color: #6b7280;
+}
+
+.fnos-change-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 10px;
+  border: none;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.fnos-change-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+}
+
+.fnos-change-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.fnos-hint {
+  font-size: 13px;
+  color: #888;
+  padding: 12px 8px 0;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.fnos-footnote {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: #fffbeb;
+  border-radius: 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: #92400e;
+  line-height: 1.6;
+}
+
+.fnos-footnote i {
+  color: #f59e0b;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+/* ===== 文件夹选择模态框 ===== */
+.fnos-modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 20px;
+}
+
+.fnos-modal {
+  width: 100%;
+  max-width: 480px;
+  max-height: 80vh;
+  background: #fff;
+  border-radius: 20px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: fnos-modal-in 0.2s ease-out;
+}
+
+@keyframes fnos-modal-in {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.fnos-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.fnos-modal-head h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.fnos-modal-close {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: none;
+  background: #f3f4f6;
+  color: #6b7280;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.fnos-modal-close:hover {
+  background: #fee2e2;
+  color: #ef4444;
+}
+
+.fnos-modal-body {
+  padding: 18px 22px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.fnos-modal-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #eff6ff;
+  border-radius: 10px;
+  font-size: 12px;
+  color: #1e40af;
+  line-height: 1.6;
+  margin-bottom: 14px;
+}
+
+.fnos-modal-tip i {
+  color: #3b82f6;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.fnos-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fnos-folder-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border-radius: 12px;
+  border: 1.5px solid #e5e7eb;
+  background: #fafafa;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.fnos-folder-item:hover {
+  border-color: #c7d2fe;
+  background: #f5f7ff;
+  transform: translateY(-1px);
+}
+
+.fnos-folder-item.selected {
+  border-color: #667eea;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(118, 75, 162, 0.06) 100%);
+  box-shadow: 0 4px 14px rgba(102, 126, 234, 0.15);
+}
+
+.fnos-radio {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid #d1d5db;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.2s;
+}
+
+.fnos-folder-item.selected .fnos-radio {
+  border-color: #667eea;
+}
+
+.fnos-radio-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.fnos-folder-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.fnos-folder-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #222;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fnos-folder-path {
+  font-size: 12px;
+  color: #888;
+  font-family: 'Consolas', 'Menlo', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fnos-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.fnos-tag-default {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.fnos-tag-auth {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.fnos-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 22px;
+  border-top: 1px solid #f3f4f6;
+  background: #fafafa;
+}
+
+.fnos-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 20px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: none;
+}
+
+.fnos-btn-ghost {
+  background: #fff;
+  color: #6b7280;
+  border: 1px solid #e5e7eb;
+}
+
+.fnos-btn-ghost:hover {
+  background: #f9fafb;
+  color: #374151;
+}
+
+.fnos-btn-primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.fnos-btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(102, 126, 234, 0.4);
+}
+
+.fnos-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+@media (max-width: 480px) {
+  .fnos-settings-card {
+    padding: 16px 18px;
+  }
+
+  .fnos-card-title {
+    font-size: 16px;
+  }
+
+  .fnos-current-path {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .fnos-change-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .fnos-modal {
+    border-radius: 16px;
+  }
+
+  .fnos-modal-head,
+  .fnos-modal-body,
+  .fnos-modal-foot {
+    padding-left: 16px;
+    padding-right: 16px;
   }
 }
 </style>
