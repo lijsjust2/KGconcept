@@ -13,16 +13,16 @@
             </div>
             <div class="floating-text">
                 <div class="floating-title">
-                    <template v-if="hasTasks">下载中</template>
-                    <template v-else-if="isAllDone">下载完成</template>
+                    <template v-if="hasTasks">下载任务进行中</template>
+                    <template v-else-if="isAllDone">已完成下载任务</template>
                     <template v-else>暂无任务</template>
                 </div>
                 <div class="floating-sub">
                     <template v-if="hasTasks">
-                        剩余 {{ remainingCount }} 首 · 已完成 {{ totalSuccess }} 首
+                        还有 {{ remainingCount }} 首，已完成 {{ totalSuccess }} 首
                     </template>
                     <template v-else-if="isAllDone">
-                        成功 {{ totalSuccess }} · 失败 {{ totalFailed }}
+                        已经下载 {{ totalSuccess }} 首
                     </template>
                     <template v-else>
                         暂无下载任务
@@ -31,6 +31,10 @@
                 <div v-if="hasTasks" class="floating-progress">
                     <div class="floating-progress-fill" :style="{ width: overallPercent + '%' }"></div>
                 </div>
+            </div>
+            <!-- 下载中不可关闭，完成后可关闭 -->
+            <div v-if="isAllDone" class="floating-close" @click.stop="dismissWidget">
+                <i class="fas fa-times"></i>
             </div>
             <div class="floating-badge" v-if="hasTasks && remainingCount > 0">{{ remainingCount }}</div>
         </div>
@@ -83,9 +87,13 @@
                             <div class="batch-head">
                                 <div class="batch-info">
                                     <div class="batch-title">
-                                        <i class="fas fa-music"></i>
-                                        {{ batch.firstSongName || '未知' }}
-                                        <span v-if="batch.total > 1" class="batch-count">等 {{ batch.total }} 首</span>
+                                        <i class="fas fa-compact-disc"></i>
+                                        <template v-if="batch.albumCount > 1">
+                                            《{{ batch.firstAlbumName }}》等 {{ batch.albumCount }} 个专辑 {{ batch.total }} 首
+                                        </template>
+                                        <template v-else>
+                                            《{{ batch.firstAlbumName }}》 {{ batch.total }} 首
+                                        </template>
                                     </div>
                                     <div class="batch-meta">
                                         <span class="quality-tag">{{ getQualityLabel(batch.quality) }}</span>
@@ -193,6 +201,9 @@ const remainingCount = computed(() => pendingCount.value + activeCount.value);
 const showFloating = computed(() => {
     if (!status.value) return false;
     if (hasTasks.value) return true;
+    // 检查用户是否手动关闭过（关闭后 30 分钟内不再显示已完成状态）
+    const dismissedAt = parseInt(localStorage.getItem('KGconcept_widget_dismissed') || '0', 10);
+    if (dismissedAt && Date.now() - dismissedAt < 30 * 60 * 1000) return false;
     // 最近有完成记录且在 30 分钟内
     const last = recent.value[0];
     if (last && last.finishedAt) {
@@ -270,6 +281,13 @@ const closePanel = () => {
     panelOpen.value = false;
 };
 
+// 关闭悬浮窗（仅在全部完成后可用，通过 localStorage 记住关闭状态）
+const dismissWidget = () => {
+    localStorage.setItem('KGconcept_widget_dismissed', String(Date.now()));
+    // 立即隐藏
+    status.value = null;
+};
+
 const cancelBatch = async (batchId) => {
     const res = await cancelDownloadQueue({ batchId });
     if (res.success) {
@@ -334,6 +352,31 @@ onBeforeUnmount(() => {
     user-select: none;
     transition: transform 0.2s ease, box-shadow 0.2s ease;
     animation: floatIn 0.3s ease-out;
+}
+
+.floating-close {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    width: 20px;
+    height: 20px;
+    background: rgba(0, 0, 0, 0.4);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: #fff;
+    opacity: 0;
+    transition: opacity 0.2s, background 0.2s;
+}
+
+.floating-btn:hover .floating-close {
+    opacity: 1;
+}
+
+.floating-close:hover {
+    background: rgba(0, 0, 0, 0.65);
 }
 
 .floating-btn:hover {

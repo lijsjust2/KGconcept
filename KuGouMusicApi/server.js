@@ -489,19 +489,27 @@ async function consturctServer(moduleDefs) {
             total: 0, pending: 0, downloading: 0, success: 0, failed: 0, cancelled: 0,
             addedAt: t.addedAt,
             quality: t.quality,
-            firstSongName: '',
+            firstAlbumName: '',
             currentSongName: '',
+            albums: new Set(),
           });
         }
         const b = batchMap.get(t.batchId);
         b.total++;
         if (b[t.status] !== undefined) b[t.status]++;
-        if (!b.firstSongName) b.firstSongName = t.song.name;
+        const albumName = t.song.album || '未知专辑';
+        b.albums.add(albumName);
+        if (!b.firstAlbumName) b.firstAlbumName = albumName;
         if (t.status === 'downloading') b.currentSongName = t.song.name;
       };
       taskQueue.forEach(aggregate);
       taskHistory.forEach(aggregate);
       const batchesArr = Array.from(batchMap.values()).sort((a, b) => b.addedAt - a.addedAt);
+      // 将 Set 转为数组和计数，方便 JSON 序列化
+      batchesArr.forEach(b => {
+        b.albumCount = b.albums.size;
+        b.albums = Array.from(b.albums);
+      });
 
       const totalSuccess = taskHistory.filter(t => t.status === 'success').length;
       const totalFailed = taskHistory.filter(t => t.status === 'failed').length;

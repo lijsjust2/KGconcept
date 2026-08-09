@@ -344,7 +344,7 @@ const handleQualitySelect = async (quality) => {
                 pushplusToken
             );
             if (result.success) {
-                message.success(`已加入下载队列，共 ${result.added} 首歌曲，关闭页面后任务仍会继续`);
+                message.success(`已添加到下载列表，共 ${result.added} 首歌曲`);
                 emit('download-complete', {
                     songs: props.songs,
                     quality: quality,

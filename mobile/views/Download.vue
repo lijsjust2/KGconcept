@@ -297,7 +297,7 @@
                     ref="batchDownloadRef"
                     :songs="selectedSongList"
                     :show-trigger-button="true"
-                    trigger-text="开始下载"
+                    trigger-text="下载专辑"
                     trigger-icon="fas fa-download"
                     :download-delay-min="downloadDelayMin"
                     :download-delay-max="downloadDelayMax"
