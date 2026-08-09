@@ -4,30 +4,35 @@
         <div
             v-if="showFloating"
             class="floating-btn"
-            :class="{ 'is-downloading': hasActive }"
+            :class="{ 'is-downloading': hasTasks, 'is-done': isAllDone }"
             @click="openPanel"
         >
             <div class="floating-icon">
-                <i v-if="hasActive" class="fas fa-spinner fa-spin"></i>
+                <i v-if="hasTasks" class="fas fa-spinner fa-spin"></i>
                 <i v-else class="fas fa-check-circle"></i>
             </div>
             <div class="floating-text">
                 <div class="floating-title">
-                    {{ hasActive ? '下载中' : '下载完成' }}
+                    <template v-if="hasTasks">下载中</template>
+                    <template v-else-if="isAllDone">下载完成</template>
+                    <template v-else>暂无任务</template>
                 </div>
                 <div class="floating-sub">
-                    <template v-if="hasActive">
-                        队列 {{ pendingCount + 1 }} 首 · 已完成 {{ totalSuccess }} 首
+                    <template v-if="hasTasks">
+                        剩余 {{ remainingCount }} 首 · 已完成 {{ totalSuccess }} 首
                     </template>
-                    <template v-else>
+                    <template v-else-if="isAllDone">
                         成功 {{ totalSuccess }} · 失败 {{ totalFailed }}
                     </template>
+                    <template v-else>
+                        暂无下载任务
+                    </template>
                 </div>
-                <div v-if="hasActive" class="floating-progress">
+                <div v-if="hasTasks" class="floating-progress">
                     <div class="floating-progress-fill" :style="{ width: overallPercent + '%' }"></div>
                 </div>
             </div>
-            <div class="floating-badge" v-if="pendingCount > 0">{{ pendingCount }}</div>
+            <div class="floating-badge" v-if="hasTasks && remainingCount > 0">{{ remainingCount }}</div>
         </div>
     </transition>
 
@@ -39,7 +44,7 @@
                     <h3>
                         <i class="fas fa-tasks"></i>
                         下载任务
-                        <span class="panel-sub" v-if="hasActive">后台运行中，关闭页面不影响</span>
+                        <span class="panel-sub" v-if="hasTasks">后台运行中，关闭页面不影响</span>
                     </h3>
                     <button class="panel-close" @click="closePanel">
                         <i class="fas fa-times"></i>
@@ -151,7 +156,7 @@
                 </div>
 
                 <div class="panel-footer">
-                    <button v-if="pendingCount > 0" class="footer-btn cancel-all" @click="cancelAll">
+                    <button v-if="hasTasks && pendingCount > 0" class="footer-btn cancel-all" @click="cancelAll">
                         <i class="fas fa-stop-circle"></i> 取消全部等待
                     </button>
                     <span v-else class="footer-tip">任务在容器后台运行，关闭页面或飞牛不会中断</span>
@@ -173,7 +178,6 @@ const panelOpen = ref(false);
 let timer = null;
 let consecutiveErrors = 0;
 
-const hasActive = computed(() => (status.value?.activeCount || 0) > 0);
 const pendingCount = computed(() => status.value?.pendingCount || 0);
 const activeCount = computed(() => status.value?.activeCount || 0);
 const totalSuccess = computed(() => status.value?.totalSuccess || 0);
@@ -181,10 +185,14 @@ const totalFailed = computed(() => status.value?.totalFailed || 0);
 const batches = computed(() => status.value?.batches || []);
 const recent = computed(() => status.value?.recent || []);
 
-// 是否显示悬浮按钮：有任务进行中，或最近 30 分钟内有完成记录
+// 是否还有未完成的任务（等待中 + 下载中）
+const hasTasks = computed(() => (pendingCount.value + activeCount.value) > 0);
+const remainingCount = computed(() => pendingCount.value + activeCount.value);
+
+// 是否显示悬浮按钮：有未完成任务，或最近 30 分钟内有完成记录
 const showFloating = computed(() => {
     if (!status.value) return false;
-    if (status.value.totalInQueue > 0) return true;
+    if (hasTasks.value) return true;
     // 最近有完成记录且在 30 分钟内
     const last = recent.value[0];
     if (last && last.finishedAt) {
@@ -192,6 +200,9 @@ const showFloating = computed(() => {
     }
     return false;
 });
+
+// 全部任务是否已完成（无等待、无下载中）
+const isAllDone = computed(() => !hasTasks.value && totalSuccess.value > 0);
 
 const overallPercent = computed(() => {
     if (!status.value) return 0;
@@ -333,6 +344,11 @@ onBeforeUnmount(() => {
 .floating-btn.is-downloading {
     background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
     box-shadow: 0 6px 20px rgba(17, 153, 142, 0.45);
+}
+
+.floating-btn.is-done {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    box-shadow: 0 6px 20px rgba(102, 126, 234, 0.45);
 }
 
 @keyframes floatIn {
