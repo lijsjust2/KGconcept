@@ -76,9 +76,15 @@
         <div class="fnos-modal">
           <div class="fnos-modal-head">
             <h3>选择下载文件夹</h3>
-            <button class="fnos-modal-close" @click="closeFolderPicker">
-              <i class="fas fa-times"></i>
-            </button>
+            <div class="fnos-modal-actions">
+              <button class="fnos-refresh-btn" @click="loadFnosFolders" :disabled="fnosLoadingFolders">
+                <i class="fas fa-sync" :class="{ 'fa-spin': fnosLoadingFolders }"></i>
+                <span>刷新</span>
+              </button>
+              <button class="fnos-modal-close" @click="closeFolderPicker">
+                <i class="fas fa-times"></i>
+              </button>
+            </div>
           </div>
 
           <div class="fnos-modal-body">
@@ -86,7 +92,19 @@
               <i class="fas fa-shield-alt"></i>
               <span>仅显示「飞牛应用设置 → 访问权限」中已授权的文件夹。</span>
             </div>
-            <div class="fnos-folder-list">
+
+            <div v-if="fnosLoadingFolders" class="fnos-modal-loading">
+              <i class="fas fa-spinner fa-spin"></i>
+              <span>加载中...</span>
+            </div>
+
+            <div v-else-if="fnosFolders.length === 0" class="fnos-modal-empty">
+              <i class="fas fa-folder-open"></i>
+              <p>暂无可用目录</p>
+              <p class="fnos-modal-empty-hint">请先到「飞牛应用设置 → 访问权限 → 添加文件夹」授权后再点刷新</p>
+            </div>
+
+            <div v-else class="fnos-folder-list">
               <div
                 v-for="(folder, i) in fnosFolders"
                 :key="'modal_' + folder.path + '_' + i"
@@ -1624,6 +1642,64 @@ onMounted(async () => {
 .fnos-tag-auth {
   background: #dbeafe;
   color: #1d4ed8;
+}
+
+/* 弹窗加载状态 */
+.fnos-modal-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: #667eea;
+  gap: 12px;
+}
+
+.fnos-modal-loading i {
+  font-size: 32px;
+}
+
+.fnos-modal-loading span {
+  color: #666;
+  font-size: 14px;
+}
+
+/* 弹窗空状态 */
+.fnos-modal-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  color: #999;
+  text-align: center;
+  gap: 8px;
+}
+
+.fnos-modal-empty i {
+  font-size: 48px;
+  color: #d1d5db;
+  margin-bottom: 8px;
+}
+
+.fnos-modal-empty p {
+  margin: 0;
+  font-size: 14px;
+  color: #666;
+}
+
+.fnos-modal-empty-hint {
+  font-size: 12px !important;
+  color: #999 !important;
+  max-width: 280px;
+  line-height: 1.6;
+}
+
+/* 弹窗头部操作区 */
+.fnos-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .fnos-modal-foot {

@@ -7,6 +7,8 @@ services:
     volumes:
       # data-share 声明的共享目录: KGconcept/downloads（默认下载位置）
       - "/var/apps/KGconcept/shares/KGconcept/downloads:/app/downloads"
+      # data-share 声明的共享目录: KGconcept（应用根目录）
+      - "/var/apps/KGconcept/shares/KGconcept:/var/apps/KGconcept/shares/KGconcept"
       # 挂载整个 /vol1：用户在"应用设置 → 访问权限"里添加的授权目录（/vol1/... 路径）
       # 在容器内以相同路径可见，应用用户 ACL 由飞牛系统管理
       - "/vol1:/vol1"

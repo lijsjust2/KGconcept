@@ -206,26 +206,80 @@ async function consturctServer(moduleDefs) {
   fnosRouter.get('/shared-folders', async (req, res) => {
     // 固定包含默认共享下载目录
     const folders = [];
+    
+    // 从环境变量中获取所有 data-share 目录
     if (DOWNLOAD_DIR) {
       folders.push({ path: DOWNLOAD_DIR, source: 'data-share', label: '默认下载目录 (应用共享)' });
+    }
+    
+    // 添加 data-share 的 KGconcept 目录
+    const dataShareRoot = '/var/apps/KGconcept/shares/KGconcept';
+    try {
+      fs.promises.access(dataShareRoot, fs.constants.R_OK);
+      folders.push({ path: dataShareRoot, source: 'data-share', label: '应用文件/KGconcept' });
+    } catch (e) {
+      // 目录不存在或不可访问，跳过
     }
 
     if (!FNOS_ENV) {
       return res.json({ code: 0, msg: '', data: { paths: folders } });
     }
 
+    // 尝试通过 OpenAPI 查询授权目录
     try {
       const apiResp = await fnosOpenApi('trim.file.getSharedAccessibleFolders');
+      console.log('[FNOS] OpenAPI getSharedAccessibleFolders 响应:', JSON.stringify(apiResp));
+      
       if (apiResp?.code === 0 && Array.isArray(apiResp?.data?.paths)) {
         for (const p of apiResp.data.paths) {
+          // 跳过与已有目录重复的
           if (!folders.some((f) => f.path === p)) {
-            folders.push({ path: p, source: 'app-authorization', label: p });
+            // 检查路径是否在容器内可访问
+            try {
+              fs.promises.access(p, fs.constants.R_OK);
+              folders.push({ path: p, source: 'app-authorization', label: p });
+              console.log('[FNOS] 添加授权目录:', p);
+            } catch (e) {
+              console.log('[FNOS] 授权目录不可访问，跳过:', p);
+            }
           }
         }
+      } else {
+        console.warn('[FNOS] OpenAPI 返回异常:', apiResp?.msg || '未知错误');
       }
     } catch (e) {
       console.warn('[FNOS] 查询共享授权目录失败:', e.message);
+      console.warn('[FNOS] Socket路径:', FNOS_SOCKET_PATH);
+      console.warn('[FNOS] APPNAME:', TRIM_APPNAME);
     }
+    
+    // 如果 OpenAPI 失败，尝试直接扫描 /vol1 下可能的授权目录
+    if (folders.length <= 1) {
+      console.log('[FNOS] 尝试扫描 /vol1 查找授权目录...');
+      try {
+        const vol1Entries = await fs.promises.readdir('/vol1', { withFileTypes: true });
+        for (const entry of vol1Entries) {
+          if (entry.isDirectory()) {
+            const entryPath = path.join('/vol1', entry.name);
+            if (!folders.some((f) => f.path === entryPath)) {
+              try {
+                const stat = await fs.promises.stat(entryPath);
+                if (stat.isDirectory()) {
+                  folders.push({ path: entryPath, source: 'app-authorization', label: entryPath });
+                  console.log('[FNOS] 扫描到授权目录:', entryPath);
+                }
+              } catch (e) {
+                // 跳过不可访问的目录
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[FNOS] 扫描 /vol1 失败:', e.message);
+      }
+    }
+    
+    console.log('[FNOS] 最终返回目录列表:', folders.map(f => f.path));
     res.json({ code: 0, msg: '', data: { paths: folders } });
   });
 
