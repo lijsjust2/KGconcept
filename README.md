@@ -80,7 +80,7 @@ npm run install-all
 #### 方式一：从 Docker Hub 拉取镜像（推荐）
 ```bash
 # 自动适配架构（推荐）
-docker pull lijsfun/kgconcept:latest
+docker pull KGCC:latest
 
 # 运行容器
 docker run -d \
@@ -88,16 +88,16 @@ docker run -d \
   --restart unless-stopped \
   -p 8880:8880 \
   -p 6521:6521 \
-  lijsfun/kgconcept:latest
+  KGCC:latest
 ```
 
 如需指定特定架构：
 ```bash
 # AMD64 架构 (x86_64)
-docker pull lijsfun/kgconcept:amd64-latest
+docker pull KGCC:amd64-latest
 
 # ARM64 架构 (aarch64)
-docker pull lijsfun/kgconcept:arm64-latest
+docker pull KGCC:arm64-latest
 ```
 
 #### 方式二：Docker Compose 快速启动
@@ -111,11 +111,11 @@ docker compose up -d --build
 ##### 3.1 加载镜像（适用于从 GitHub Releases 下载的 tar 包）
 加载 AMD64 架构镜像
 ```bash
-docker load -i kgconcept-amd64-版本号.tar
+docker load -i KGCC-amd64-版本号.tar
 ```
 加载 ARM64 架构镜像
 ```bash
-docker load -i kgconcept-arm64-版本号.tar
+docker load -i KGCC-arm64-版本号.tar
 ```
 
 ##### 3.2 运行容器
@@ -126,7 +126,7 @@ docker run -d \
   --restart unless-stopped \
   -p 8880:8880 \
   -p 6521:6521 \
-  kgconcept:amd64-版本号
+  KGCC:amd64-版本号
 ```
 运行 ARM64 架构
 ```bash
@@ -135,7 +135,7 @@ docker run -d \
   --restart unless-stopped \
   -p 8880:8880 \
   -p 6521:6521 \
-  kgconcept:arm64-版本号
+  KGCC:arm64-版本号
 ```
 
 ---

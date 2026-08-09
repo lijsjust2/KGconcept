@@ -1,6 +1,6 @@
 services:
   kgconcept:
-    image: lijsfun/kgconcept:latest
+    image: KGCC:latest
     container_name: kgconcept
     ports:
       - "8880:8880"
