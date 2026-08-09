@@ -141,38 +141,61 @@ async function consturctServer(moduleDefs) {
   const FNOS_SOCKET_PATH = process.env.FNOS_SOCKET_PATH || '/var/run/trim_open_gateway_apiscope.socket';
   const http = require('http');
 
-  // TRIM_API_TOKEN 获取（三重保障）
-  // 文档: token 在系统调用应用脚本时注入 TRIM_API_TOKEN 环境变量
+  // TRIM_API_TOKEN 获取（三重保障 + 文件变更实时刷新）
+  // 文档: https://developer.fnnas.com/api/authorization/overview/
+  //   - token 在飞牛执行 cmd/* / install_callback / config_callback 时通过环境变量注入
+  //   - 我们在这些脚本里把 token 持久化到 ${TRIM_APPDEST}/.trim_token 文件
+  //   - docker-compose 把该文件挂载到容器内 /app/.trim_token
   // 策略:
-  //   1) 优先读 process.env.TRIM_API_TOKEN
-  //   2) 如果为空，读 /app/.trim_token 文件（由 cmd/main 写入）
-  //   3) 启动后每 5 秒检查一次 token 文件，有更新就替换
+  //   1) 启动时优先读 process.env.TRIM_API_TOKEN
+  //   2) 读 /app/.trim_token 文件（即使 env 有也要读，防止文件里是更新的 token）
+  //   3) 每 5 秒检查一次 token 文件，内容有变化就立即覆盖，
+  //      这样用户改"访问权限"后 config_callback 写的新 token 能立刻生效，不用重启容器
   let TRIM_API_TOKEN = process.env.TRIM_API_TOKEN || '';
+  let TOKEN_FILE_LAST_MTIME = 0;
+  let TOKEN_FILE_LAST_LEN = -1;
   const TOKEN_FILE_PATH = '/app/.trim_token';
 
-  const refreshTokenFromFile = () => {
-    if (TRIM_API_TOKEN) return;  // 已有 token 就不覆盖
-    if (fs.existsSync(TOKEN_FILE_PATH)) {
-      try {
-        const fileToken = fs.readFileSync(TOKEN_FILE_PATH, 'utf8').trim();
-        if (fileToken) {
-          TRIM_API_TOKEN = fileToken;
-          console.log('[FNOS] 从文件读取 TRIM_API_TOKEN 成功 (长度=' + fileToken.length + ')');
-        }
-      } catch (_) {}
+  const refreshTokenFromFile = (forceLog = false) => {
+    if (!fs.existsSync(TOKEN_FILE_PATH)) {
+      if (forceLog) console.warn('[FNOS] TOKEN_FILE 不存在:', TOKEN_FILE_PATH);
+      return false;
     }
+    try {
+      const stat = fs.statSync(TOKEN_FILE_PATH);
+      const fileContent = fs.readFileSync(TOKEN_FILE_PATH, 'utf8').trim();
+      // 只要 mtime 或 长度 变了，就认为 token 更新了，立即重载
+      const changed =
+        stat.mtimeMs !== TOKEN_FILE_LAST_MTIME ||
+        fileContent.length !== TOKEN_FILE_LAST_LEN ||
+        fileContent !== TRIM_API_TOKEN;
+      if (changed && fileContent) {
+        TRIM_API_TOKEN = fileContent;
+        TOKEN_FILE_LAST_MTIME = stat.mtimeMs;
+        TOKEN_FILE_LAST_LEN = fileContent.length;
+        console.log(
+          '[FNOS] TRIM_API_TOKEN 已从文件刷新 (长度=' +
+            fileContent.length +
+            ', mtime=' +
+            new Date(stat.mtimeMs).toISOString() +
+            ')'
+        );
+        return true;
+      }
+    } catch (e) {
+      console.warn('[FNOS] 读取 token 文件失败:', e.message);
+    }
+    return false;
   };
 
-  // 立即尝试一次
-  refreshTokenFromFile();
+  // 启动时立即尝试一次（强制打日志）
+  refreshTokenFromFile(true);
 
-  // 后台轮询：每 5 秒再检查一次 token 文件
+  // 后台轮询：每 5 秒检查一次 token 文件变更
+  // 关键：用户改「访问权限」后，飞牛会执行 config_callback → 写新 token 文件
+  // 这里监听到文件变更就立刻重载，这样用户点「刷新」按钮时拿到的就是新 token 调的 API
   setInterval(() => {
-    const prev = TRIM_API_TOKEN;
-    refreshTokenFromFile();
-    if (TRIM_API_TOKEN && TRIM_API_TOKEN !== prev) {
-      console.log('[FNOS] TRIM_API_TOKEN 已更新 (长度=' + TRIM_API_TOKEN.length + ')');
-    }
+    refreshTokenFromFile(false);
   }, 5000);
 
   // 启动时诊断：打印飞牛环境配置
@@ -192,6 +215,21 @@ async function consturctServer(moduleDefs) {
   // 本地开发靠 Vite proxy 把 /api/fnos/* 转成后端 /fnos/*；
   // 飞牛容器内前端直接请求 /api/fnos/*，需要后端原生支持
   const fnosRouter = express.Router();
+
+  // fnos 路由专用中间件：
+  //   1) 禁用任何缓存（浏览器/代理/apicache 全禁），保证「刷新」按钮一定拿到最新结果
+  //   2) 每次请求都立刻 refreshTokenFromFile，用户改完「访问权限」→ config_callback 写新 token 后，
+  //      下次点刷新立刻用上新 token，不用等 5 秒轮询，也不用重启容器
+  fnosRouter.use((req, res, next) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    const changed = refreshTokenFromFile(false);
+    if (changed) {
+      console.log('[FNOS] ' + req.path + ' 请求触发 token 文件刷新，已加载最新 token');
+    }
+    next();
+  });
 
   // 辅助：检查路径是否可写
   const isPathWritable = (p) => {
@@ -305,7 +343,13 @@ async function consturctServer(moduleDefs) {
     tokenFileExists: fs.existsSync(TOKEN_FILE_PATH),
   });
 
-  // 查询管理员为应用授权的共享目录列表（严格按飞牛"访问权限"的勾选结果）
+  // 查询管理员为应用授权的共享目录列表
+  // 核心原则：严格按飞牛「访问权限」勾选结果，即 trim.file.getSharedAccessibleFolders 返回的内容
+  // 绝不自己扫描 /vol1 或其他目录。只额外保留应用自身 data-share 的默认下载目录。
+  // 文档:
+  //   https://developer.fnnas.com/api/authorization/shared-access/
+  //   trim.file.getSharedAccessibleFolders → 返回应用可访问的用户授权目录列表
+  //   trim.file.convertPath → 把绝对路径转成用户友好的语义路径（如"存储空间1/xxx"）
   fnosRouter.get('/shared-folders', async (req, res) => {
     const folders = [];
     const seenPaths = new Set();
@@ -315,45 +359,66 @@ async function consturctServer(moduleDefs) {
       folders.push({ path: p, source, label: label || p });
     };
 
-    // (1) 应用自身共享目录（config/resource 声明的 shares）
+    // (1) 应用自身 data-share 共享目录（config/resource 声明的 shares）
+    //     这个是应用默认的下载目录，始终保留。
     if (DOWNLOAD_DIR) {
       addFolder(DOWNLOAD_DIR, 'data-share', '默认下载目录 (应用共享)');
     }
-    try {
-      const appShareRoot = DOWNLOAD_DIR
-        ? path.resolve(DOWNLOAD_DIR, '..')
-        : '/var/apps/KGconcept/shares/KGconcept';
-      if (fs.existsSync(appShareRoot) && isPathWritable(appShareRoot) && appShareRoot !== DOWNLOAD_DIR) {
-        addFolder(appShareRoot, 'app-share', '应用文件/KGconcept');
-      }
-    } catch (_) {}
 
-    let debug = { ...buildEnvSnapshot(), openApiCall: null, convertCall: null };
+    let debug = { ...buildEnvSnapshot(), openApiCall: null, convertCall: null, tokenUsedHead: null };
+
+    // 每次调用前先主动刷新一次 token（不等轮询），确保最新的 token 立刻生效
+    refreshTokenFromFile(true);
+    debug.tokenUsedHead = TRIM_API_TOKEN ? TRIM_API_TOKEN.slice(0, 12) + '...' : '(empty)';
+    debug.tokenFileMtime = TOKEN_FILE_LAST_MTIME ? new Date(TOKEN_FILE_LAST_MTIME).toISOString() : null;
 
     if (!FNOS_ENV) {
+      console.log('[FNOS] 非 FNOS_ENV 环境，跳过 OpenAPI 调用，仅返回 data-share 目录');
       return res.json({ code: 0, msg: '', data: { paths: folders }, _debug: debug });
     }
 
-    // (2) 调用飞牛官方后端 API：trim.file.getSharedAccessibleFolders
+    // (2) 调用飞牛官方 API：trim.file.getSharedAccessibleFolders
+    //     严格按文档：req 名字 + Authorization: Bearer <token>
+    //     这个接口返回的才是用户在「访问权限」里真正勾选的目录！
     let rawPaths = [];
     try {
       console.log('[FNOS] >>> 调用 trim.file.getSharedAccessibleFolders');
+      console.log('[FNOS]     本次使用 token 前缀:', debug.tokenUsedHead, '长度:', TRIM_API_TOKEN.length);
       const apiResp = await fnosOpenApi('trim.file.getSharedAccessibleFolders');
       debug.openApiCall = { success: true, response: apiResp };
-      console.log('[FNOS] <<< getSharedAccessibleFolders 返回:', JSON.stringify(apiResp));
+      console.log('[FNOS] <<< getSharedAccessibleFolders 完整返回:', JSON.stringify(apiResp));
 
-      if (apiResp?.code === 0 && Array.isArray(apiResp?.data?.paths)) {
-        rawPaths = apiResp.data.paths;
-        console.log('[FNOS] OpenAPI 拿到授权目录数量=', rawPaths.length, rawPaths);
+      // 兼容各种可能的返回格式（文档说 data.paths，也可能 data 直接是数组或其他结构）
+      if (apiResp?.code === 0) {
+        if (Array.isArray(apiResp?.data?.paths)) {
+          rawPaths = apiResp.data.paths;
+        } else if (Array.isArray(apiResp?.data)) {
+          rawPaths = apiResp.data;
+        } else if (Array.isArray(apiResp?.paths)) {
+          rawPaths = apiResp.paths;
+        }
+        // 如果返回的是 [{path:..., name:...}, ...] 对象数组，提取 path
+        if (rawPaths.length > 0 && typeof rawPaths[0] === 'object' && rawPaths[0].path) {
+          rawPaths = rawPaths.map((x) => x.path);
+        }
+        console.log('[FNOS]     → 解析后 rawPaths 共', rawPaths.length, '条:', JSON.stringify(rawPaths));
       } else {
-        console.warn('[FNOS] OpenAPI 返回非正常: code=', apiResp?.code, 'msg=', apiResp?.msg);
+        console.warn(
+          '[FNOS]     ! OpenAPI 返回非正常 code=',
+          apiResp?.code,
+          'msg=',
+          apiResp?.msg,
+          '完整 response=',
+          JSON.stringify(apiResp)
+        );
       }
     } catch (e) {
-      debug.openApiCall = { success: false, error: e.message };
+      debug.openApiCall = { success: false, error: e.message, stack: e.stack?.split('\n').slice(0, 3).join('\n') };
       console.warn('[FNOS] getSharedAccessibleFolders 调用异常:', e.message);
     }
 
-    // (3) 友好名称转换
+    // (3) 调用 trim.file.convertPath 把绝对路径转换成语义路径（友好显示名）
+    //     传参严格按文档：{ path: string[] | string, language: 'zh-CN' }
     let pathMap = {};
     if (rawPaths.length > 0) {
       try {
@@ -362,20 +427,41 @@ async function consturctServer(moduleDefs) {
           language: 'zh-CN',
         });
         debug.convertCall = { success: true, response: convertResp };
-        if (convertResp?.code === 0 && Array.isArray(convertResp?.data?.result)) {
-          for (const item of convertResp.data.result) {
-            pathMap[item.path] = item.semanticPath || item.path;
+        console.log('[FNOS] <<< convertPath 完整返回:', JSON.stringify(convertResp));
+
+        if (convertResp?.code === 0) {
+          let arr = [];
+          if (Array.isArray(convertResp?.data?.result)) arr = convertResp.data.result;
+          else if (Array.isArray(convertResp?.data)) arr = convertResp.data;
+          else if (Array.isArray(convertResp?.result)) arr = convertResp.result;
+
+          for (const item of arr) {
+            // 兼容 { path, semanticPath } 和 { path, name } 和 其他可能
+            const p = item.path || item.absolutePath || '';
+            const label = item.semanticPath || item.name || item.displayName || item.label || p;
+            if (p) pathMap[p] = label;
           }
+          console.log('[FNOS]     → 解析后 pathMap:', JSON.stringify(pathMap));
+        } else {
+          console.warn(
+            '[FNOS]     ! convertPath 返回非正常 code=',
+            convertResp?.code,
+            'msg=',
+            convertResp?.msg
+          );
         }
       } catch (e) {
         debug.convertCall = { success: false, error: e.message };
+        console.warn('[FNOS] convertPath 调用异常:', e.message);
       }
     }
+
+    // (4) 把 OpenAPI 拿到的授权目录加入最终列表（source=app-authorization，严格按"访问权限"定义）
     for (const p of rawPaths) {
       addFolder(p, 'app-authorization', pathMap[p] || p);
     }
 
-    console.log('[FNOS] 最终返回:');
+    console.log('[FNOS] 最终 shared-folders 返回 (共' + folders.length + '条):');
     for (const f of folders) {
       console.log(`  - [${f.source}] ${f.label}  ->  ${f.path}`);
     }

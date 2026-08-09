@@ -50,17 +50,20 @@ export function getFnosStatus() {
 
 /**
  * 查询管理员为应用授权的全部下载目录（应用共享 + 手动授权目录）
- * @returns {Promise<{path: string, source: string, label: string}[]>}
+ * @returns {Promise<{code:number, msg?:string, data:{paths:Array}, _debug?:any} | Array>}
+ *   返回格式优先保留完整响应（含 _debug），便于 UI 展示诊断信息；
+ *   出错时回退为空数组。
  */
 export async function getSharedFolders() {
   try {
     await checkFnosEnv()
     const res = await get('/fnos/shared-folders', {}, { timeout: 8000 })
     if (res?.code === 0 && Array.isArray(res?.data?.paths)) {
-      return res.data.paths
+      // 返回完整的响应对象，不要拆开，这样 Profile.vue 能拿到 _debug
+      return res
     }
-    log('获取下载目录列表失败:', res?.msg)
-    return []
+    log('获取下载目录列表失败:', res?.msg, '完整响应:', res)
+    return { code: res?.code || -1, msg: res?.msg || '获取失败', data: { paths: [] }, _raw: res }
   } catch (e) {
     log('获取下载目录列表异常:', e?.message)
     return []
