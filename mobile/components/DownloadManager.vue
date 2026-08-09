@@ -688,10 +688,6 @@ const generateFileName = (quality) => {
   
   let fileName = `${songName} - ${artistName}`
   
-  if (qualityName) {
-    fileName += ` [${qualityName}]`
-  }
-  
   const extension = quality.quality === 'flac' ? 'flac' : 'mp3'
   fileName += `.${extension}`
   

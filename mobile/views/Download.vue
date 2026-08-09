@@ -245,36 +245,6 @@
                 </div>
                 
                 <div class="config-grid">
-                    <!-- 下载路径配置 -->
-                    <div class="download-path-config">
-                        <label class="input-label">
-                            <i class="fas fa-folder"></i>
-                            <span>下载路径</span>
-                        </label>
-                        <div class="path-control">
-                            <div class="path-display" v-if="downloadPath">
-                                <i class="fas fa-folder-open"></i>
-                                <span class="path-name">{{ downloadPath }}</span>
-                            </div>
-                            <div class="path-display empty" v-else>
-                                <i class="fas fa-info-circle"></i>
-                                <span>未设置，使用浏览器默认下载路径</span>
-                            </div>
-                            <button @click="selectDownloadPath" class="path-btn select" v-if="fsSupported">
-                                <i class="fas fa-folder-plus"></i> {{ downloadPath ? '更改' : '选择路径' }}
-                            </button>
-                            <button @click="clearDownloadPath" class="path-btn clear" v-if="downloadPath && fsSupported">
-                                <i class="fas fa-times"></i> 清除
-                            </button>
-                        </div>
-                        <p class="hint" v-if="fsSupported">
-                            <i class="fas fa-lightbulb"></i> 选择路径后，会自动按「歌手/专辑」创建文件夹存放歌曲
-                        </p>
-                        <p class="hint warning" v-else>
-                            <i class="fas fa-exclamation-triangle"></i> 当前浏览器不支持自定义路径，建议使用 Chrome 或 Edge
-                        </p>
-                    </div>
-                    
                     <!-- PushPlus 推送配置 -->
                     <div class="pushplus-config">
                         <label class="input-label">

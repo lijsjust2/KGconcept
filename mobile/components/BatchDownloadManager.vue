@@ -516,7 +516,7 @@ const downloadSong = async (song, quality) => {
                 const album = songInfo.album || song.album || song.album_name || '未知专辑';
                 const songName = song.name || song.originalData?.name || '未知歌曲';
                 const ext = currentQuality === 'flac' ? 'flac' : 'mp3';
-                const fnosFileName = `${songName} - ${artist} [${currentQuality}].${ext}`;
+                const fnosFileName = `${songName} - ${artist}.${ext}`;
                 
                 const fnosResult = await downloadToFnos(downloadUrl, fnosFileName, artist, album, true);
                 if (!fnosResult.success) {
