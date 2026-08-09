@@ -137,10 +137,26 @@ async function consturctServer(moduleDefs) {
   // ==================== 飞牛 fnOS 环境接口 ====================
   const FNOS_ENV = process.env.FNOS_ENV === 'true';
   const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || '';
-  const TRIM_API_TOKEN = process.env.TRIM_API_TOKEN || '';
   const TRIM_APPNAME = process.env.TRIM_APPNAME || 'KGconcept';
   const FNOS_SOCKET_PATH = process.env.FNOS_SOCKET_PATH || '/var/run/trim_open_gateway_apiscope.socket';
   const http = require('http');
+
+  // TRIM_API_TOKEN 获取（双重保障：环境变量 + 文件）
+  // 1) 优先使用 docker-entrypoint.sh export 的环境变量
+  // 2) 如果环境变量为空，直接读 /app/.trim_token 文件
+  let TRIM_API_TOKEN = process.env.TRIM_API_TOKEN || '';
+  const TOKEN_FILE_PATH = '/app/.trim_token';
+  if (!TRIM_API_TOKEN && fs.existsSync(TOKEN_FILE_PATH)) {
+    try {
+      const fileToken = fs.readFileSync(TOKEN_FILE_PATH, 'utf8').trim();
+      if (fileToken) {
+        TRIM_API_TOKEN = fileToken;
+        console.log('[FNOS] 从文件读取 TRIM_API_TOKEN 成功 (长度=' + fileToken.length + ')');
+      }
+    } catch (e) {
+      console.warn('[FNOS] 读取 token 文件失败:', e.message);
+    }
+  }
 
   // 启动时诊断：打印飞牛环境配置
   console.log('========================================');
@@ -152,6 +168,7 @@ async function consturctServer(moduleDefs) {
   console.log('  FNOS_SOCKET_PATH      :', FNOS_SOCKET_PATH);
   console.log('  Socket exists?        :', fs.existsSync(FNOS_SOCKET_PATH) ? 'YES' : 'NO');
   console.log('  DOWNLOAD_DIR exists?  :', fs.existsSync(DOWNLOAD_DIR) ? 'YES' : 'NO');
+  console.log('  TOKEN_FILE_PATH       :', TOKEN_FILE_PATH, 'exists:', fs.existsSync(TOKEN_FILE_PATH) ? 'YES' : 'NO');
   console.log('========================================');
 
   // 飞牛路由统一挂到 Router 上，然后同时暴露 /fnos/* 和 /api/fnos/* 两个前缀

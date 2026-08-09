@@ -1,5 +1,16 @@
 #!/bin/bash
 
 ### This script is called after the application configuration is changed.
+### 把最新的 TRIM_API_TOKEN 持久化到文件（token 可能会轮换）。
+
+TOKEN_FILE="${TRIM_APPDEST}/.trim_token"
+
+if [ -n "${TRIM_API_TOKEN}" ]; then
+    echo "${TRIM_API_TOKEN}" > "${TOKEN_FILE}"
+    chmod 600 "${TOKEN_FILE}" 2>/dev/null
+    echo "[$(date)] config_callback: TRIM_API_TOKEN 已写入 ${TOKEN_FILE} (长度: ${#TRIM_API_TOKEN})"
+else
+    echo "[$(date)] config_callback: TRIM_API_TOKEN 为空，未写入"
+fi
 
 exit 0
