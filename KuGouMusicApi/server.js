@@ -139,9 +139,8 @@ async function consturctServer(moduleDefs) {
   const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || '';
   const APP_NAME = process.env.APP_NAME || 'KGconcept';
 
-  // TRIM API token 路径（飞牛自动注入）
+  // TRIM API token 路径（飞牛自动注入，通过 docker-compose 挂载）
   const TRIM_TOKEN_PATHS = [
-    '/var/apps/KGconcept/.trim_token',
     '/var/apps/KGconcept/.trim_token',
   ];
   let cachedTrimToken = '';
@@ -185,6 +184,29 @@ async function consturctServer(moduleDefs) {
     });
   });
 
+  // 宿主机路径 → 容器路径 映射表
+  // key: 宿主机路径前缀, value: 容器路径前缀
+  const HOST_TO_CONTAINER = [
+    { host: '/var/apps/KGconcept/shares/KGconcept/downloads', container: '/app/downloads' },
+    { host: '/var/apps/KGconcept/shares/KGconcept', container: '/app/shares/KGconcept' },
+    { host: '/vol1', container: '/vol1' },
+  ];
+
+  // 将宿主机路径转换为容器内路径
+  const hostToContainerPath = (hostPath) => {
+    if (!hostPath) return hostPath;
+    for (const { host, container } of HOST_TO_CONTAINER) {
+      if (hostPath === host || hostPath.startsWith(host + '/')) {
+        return container + hostPath.slice(host.length);
+      }
+    }
+    // 已经是容器路径（如 /app/...）直接返回
+    if (hostPath.startsWith('/app/') || hostPath.startsWith('/var/apps/')) {
+      return hostPath;
+    }
+    return hostPath;
+  };
+
   // 获取授权访问的共享目录列表（TRIM API + 文件系统扫描）
   app.get('/fnos/shared-folders', async (req, res) => {
     if (!FNOS_ENV) {
@@ -194,31 +216,60 @@ async function consturctServer(moduleDefs) {
       const folders = [];
       const seen = new Set();
 
-      // 1. 默认共享目录（data-share 声明的）
-      const defaultShares = ['KGconcept/downloads', 'KGconcept'];
-      for (const shareName of defaultShares) {
-        const containerPath = `/var/apps/KGconcept/shares/${shareName}`;
-        let exists = false;
-        let writable = false;
+      // ===== 1. 容器内已挂载的默认共享目录 =====
+      // DOWNLOAD_DIR = /app/downloads (已挂载自 KGconcept/downloads)
+      const defaultContainerPaths = [
+        { container: '/app/downloads', name: 'KGconcept/downloads', source: 'default' },
+        { container: '/app/shares/KGconcept', name: 'KGconcept', source: 'default' },
+      ];
+      for (const entry of defaultContainerPaths) {
         try {
-          fs.accessSync(containerPath);
-          exists = true;
-          fs.accessSync(containerPath, fs.constants.W_OK);
-          writable = true;
-        } catch (_) {}
-        if (exists) {
+          fs.accessSync(entry.container);
+          let writable = false;
+          try {
+            fs.accessSync(entry.container, fs.constants.W_OK);
+            writable = true;
+          } catch (_) {}
           folders.push({
-            name: shareName,
-            path: containerPath,
+            name: entry.name,
+            path: entry.container,
             writable,
-            source: 'default',
+            source: entry.source,
           });
-          seen.add(containerPath);
+          seen.add(entry.container);
+          console.log(`[FNOS] 默认目录: ${entry.container} writable=${writable}`);
+        } catch (_) {
+          console.log(`[FNOS] 默认目录不存在: ${entry.container}`);
         }
       }
 
-      // 2. TRIM API 获取授权文件夹
+      // ===== 2. 扫描 /app/shares/KGconcept 下的子目录 =====
+      try {
+        const sharesDir = '/app/shares/KGconcept';
+        const entries = fs.readdirSync(sharesDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const containerPath = path.join(sharesDir, entry.name);
+            if (seen.has(containerPath)) continue;
+            let writable = false;
+            try {
+              fs.accessSync(containerPath, fs.constants.W_OK);
+              writable = true;
+            } catch (_) {}
+            folders.push({
+              name: `KGconcept/${entry.name}`,
+              path: containerPath,
+              writable,
+              source: 'default',
+            });
+            seen.add(containerPath);
+          }
+        }
+      } catch (_) {}
+
+      // ===== 3. TRIM API 获取授权文件夹 =====
       const token = readTrimToken();
+      console.log(`[FNOS] TRIM token: ${token ? '已获取' : '未获取'}`);
       if (token) {
         try {
           const trimRes = await axios.post(
@@ -229,38 +280,55 @@ async function consturctServer(moduleDefs) {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json',
               },
-              timeout: 8000,
+              timeout: 10000,
             }
           );
+          console.log(`[FNOS] TRIM API 响应: code=${trimRes.data?.code}, data count=${Array.isArray(trimRes.data?.data) ? trimRes.data.data.length : 'N/A'}`);
           if (trimRes.data && trimRes.data.code === 0 && Array.isArray(trimRes.data.data)) {
             for (const item of trimRes.data.data) {
-              const folderPath = item.path || item.folder_path || item.file_path || '';
-              const folderName = item.name || item.folder_name || folderPath;
-              if (!folderPath || seen.has(folderPath)) continue;
-              // 检查是否可写
+              const hostPath = item.path || item.folder_path || item.file_path || '';
+              const folderName = item.name || item.folder_name || hostPath;
+              if (!hostPath) continue;
+              const containerPath = hostToContainerPath(hostPath);
+              if (seen.has(containerPath)) continue;
+              // 检查容器内是否存在且可写
+              let exists = false;
               let writable = false;
               try {
-                fs.accessSync(folderPath, fs.constants.W_OK);
+                fs.accessSync(containerPath);
+                exists = true;
+                fs.accessSync(containerPath, fs.constants.W_OK);
                 writable = true;
               } catch (_) {}
-              // 转换为容器内路径（/vol1/xxx -> /vol1/xxx）
-              // 飞牛 sharedAccess 返回的是宿主路径，容器内 /vol1 挂载到 /vol1
-              const containerPath = folderPath.startsWith('/vol1') ? folderPath : folderPath;
-              folders.push({
-                name: folderName || folderPath,
-                path: containerPath,
-                writable,
-                source: 'trim',
-              });
-              seen.add(containerPath);
+              console.log(`[FNOS] TRIM目录: host=${hostPath} → container=${containerPath} exists=${exists} writable=${writable}`);
+              if (exists) {
+                folders.push({
+                  name: folderName || hostPath,
+                  path: containerPath,
+                  writable,
+                  source: 'trim',
+                });
+                seen.add(containerPath);
+              } else {
+                // 目录不存在可能是挂载问题，仍然列出让用户看到
+                folders.push({
+                  name: folderName || hostPath,
+                  path: containerPath,
+                  writable: false,
+                  source: 'trim',
+                });
+                seen.add(containerPath);
+              }
             }
           }
         } catch (e) {
           console.warn('[FNOS] TRIM API 获取共享目录失败:', e.message);
         }
+      } else {
+        console.warn('[FNOS] TRIM token 为空，跳过授权目录查询');
       }
 
-      // 3. 扫描 /vol1 下可写的一级目录（兜底，即使 TRIM 失败也有选项）
+      // ===== 4. 扫描 /vol1 下可写的一级目录 =====
       try {
         const vol1Entries = fs.readdirSync('/vol1', { withFileTypes: true });
         for (const entry of vol1Entries) {
@@ -283,8 +351,11 @@ async function consturctServer(moduleDefs) {
             }
           }
         }
-      } catch (_) {}
+      } catch (e) {
+        console.log(`[FNOS] /vol1 扫描失败: ${e.message}`);
+      }
 
+      console.log(`[FNOS] 共享目录列表: ${folders.length} 个`);
       res.json({
         code: 0,
         data: {
@@ -292,6 +363,11 @@ async function consturctServer(moduleDefs) {
           currentFolder: selectedDownloadFolder,
           currentFolderName: selectedDownloadFolderNames[selectedDownloadFolder] || '',
           downloadDir: DOWNLOAD_DIR,
+          debug: {
+            tokenAvailable: !!token,
+            tokenPath: TRIM_TOKEN_PATHS[0],
+            containerDownloadDir: DOWNLOAD_DIR,
+          },
         },
       });
     } catch (e) {
