@@ -187,6 +187,13 @@ async function consturctServer(moduleDefs) {
   };
 
   // 通过飞牛 OpenAPI Unix Socket 调用后端能力
+  //
+  // 鉴权说明（官方文档）：
+  //   - 当应用在 config/resource 声明了对应 scope（如 trim.file.sharedAccess），
+  //     飞牛后端会通过 Unix Socket + appName 自动识别应用身份，
+  //     不需要 Authorization: Bearer token 头。
+  //   - 我们仍然带上 TRIM_API_TOKEN 作为额外安全层（如果有的话）。
+  //   - 关键：**无论 token 是否为空都必须发请求**，不能因为 token 空就跳过。
   const fnosOpenApi = (req, data) => {
     return new Promise((resolve, reject) => {
       const payload = JSON.stringify({
@@ -195,25 +202,48 @@ async function consturctServer(moduleDefs) {
         appName: TRIM_APPNAME,
         data: data || {},
       });
+
+      // 构建 headers：始终带 Content-Type，可选带 Authorization
+      const headers = {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      };
+      if (TRIM_API_TOKEN) {
+        headers['Authorization'] = `Bearer ${TRIM_API_TOKEN}`;
+      }
+
       const options = {
         socketPath: FNOS_SOCKET_PATH,
         path: '/api/v1/trimapp',
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(payload),
-          ...(TRIM_API_TOKEN ? { Authorization: `Bearer ${TRIM_API_TOKEN}` } : {}),
-        },
+        headers,
+        timeout: 8000,
       };
+
       const hReq = http.request(options, (hRes) => {
         let buf = '';
         hRes.setEncoding('utf8');
         hRes.on('data', (c) => (buf += c));
         hRes.on('end', () => {
-          try { resolve(JSON.parse(buf)); } catch (e) { reject(new Error('非JSON响应: ' + buf.slice(0, 200))); }
+          try {
+            const parsed = JSON.parse(buf);
+            // 请求成功（无论 code 是 0 还是其他），都 resolve 让上层处理
+            resolve(parsed);
+          } catch (e) {
+            // 不是 JSON（通常是错误响应），直接 reject
+            reject(new Error('非JSON响应: ' + buf.slice(0, 200)));
+          }
         });
       });
-      hReq.on('error', reject);
+
+      hReq.on('error', (err) => {
+        // socket 连接错误 → 这是真正的失败
+        reject(new Error(`Unix Socket 连接失败 (${FNOS_SOCKET_PATH}): ${err.message}`));
+      });
+      hReq.on('timeout', () => {
+        hReq.destroy();
+        reject(new Error('请求超时 (8s)'));
+      });
       hReq.write(payload);
       hReq.end();
     });
