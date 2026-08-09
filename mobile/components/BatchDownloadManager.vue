@@ -124,7 +124,8 @@ import {
     getFileExtension,
     getQualityDescription
 } from '../utils/qualityConfig';
-import { checkFnosEnv, getFnosStatus, downloadToFnos } from '../utils/fnos';
+import { checkFnosEnv, getFnosStatus, downloadToFnos, addToDownloadQueue } from '../utils/fnos';
+import message from '../utils/message';
 
 const sanitizeFileName = (name) => {
     if (!name) return '未知';
@@ -300,7 +301,7 @@ defineExpose({
 
 const handleQualitySelect = async (quality) => {
     showQualityModal.value = false;
-    
+
     if (isDownloading.value) {
         console.warn('已有下载任务在进行中，跳过重复请求');
         return;
@@ -309,24 +310,67 @@ const handleQualitySelect = async (quality) => {
         console.warn('目录选择对话框已打开，跳过重复请求');
         return;
     }
-    
+
     selectedQuality.value = quality;
-    
+
     if (props.songs.length === 0) return;
-    
+
     // 等待 QualityModal 的 DOM 和过渡动画完全卸载，
     // 避免和 showDirectoryPicker 抢占浏览器 picker 激活态
     await nextTick();
-    await sleep(500);
-    
-    // 飞牛环境下跳过目录选择，直接使用后端下载到共享目录
+    await sleep(300);
+
+    // 飞牛环境：直接加入后台下载队列，关闭页面/飞牛后任务仍会继续
     const fnosStatus = await checkFnosEnv();
     if (fnosStatus.isFnos) {
         useFileSystemAccess.value = false;
-        console.log('[BatchDownload] 检测到飞牛环境，使用后端下载到共享目录');
-    } else if (useFileSystemAccess.value) {
-        // 尝试使用 File System Access API 创建文件夹结构
-        // 策略：优先使用缓存的目录句柄，其次询问用户，最后回退到原生下载
+        console.log('[BatchDownload] 检测到飞牛环境，加入后台下载队列');
+
+        // 短暂展示进度，提示用户已加入队列
+        isDownloading.value = true;
+        isCancelled.value = false;
+        currentIndex.value = 0;
+        currentSongName.value = '正在加入下载队列...';
+        emit('download-start', props.songs, quality);
+
+        try {
+            const result = await addToDownloadQueue(
+                props.songs,
+                quality,
+                props.downloadDelayMin,
+                props.downloadDelayMax
+            );
+            if (result.success) {
+                message.success(`已加入下载队列，共 ${result.added} 首歌曲，关闭页面后任务仍会继续`);
+                emit('download-complete', {
+                    songs: props.songs,
+                    quality: quality,
+                    queued: true,
+                    batchId: result.batchId,
+                    addedCount: result.added,
+                    totalCount: props.songs.length,
+                    successCount: 0,
+                    failedCount: 0,
+                    cancelled: false
+                });
+            } else {
+                message.error(result.msg || '加入下载队列失败');
+                emit('download-fail', new Error(result.msg || '加入下载队列失败'));
+            }
+        } catch (e) {
+            message.error('加入下载队列异常: ' + (e?.message || ''));
+            emit('download-fail', e);
+        } finally {
+            isDownloading.value = false;
+            currentSongName.value = '';
+        }
+        return;
+    }
+
+    // 非飞牛环境：保持原有前端循环下载逻辑（浏览器环境无法后台执行）
+    // 尝试使用 File System Access API 创建文件夹结构
+    // 策略：优先使用缓存的目录句柄，其次询问用户，最后回退到原生下载
+    if (useFileSystemAccess.value) {
         try {
             // 1. 尝试从缓存加载之前保存的目录句柄
             if (!downloadDirHandle.value) {
@@ -336,7 +380,7 @@ const handleQualitySelect = async (quality) => {
                     console.log('[BatchDownload] 使用缓存的下载目录:', cached.name);
                 }
             }
-            
+
             // 2. 如果没有缓存，询问用户（只问一次）
             if (!downloadDirHandle.value) {
                 isPickingDirectory.value = true;

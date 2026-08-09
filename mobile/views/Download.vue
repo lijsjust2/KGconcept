@@ -973,14 +973,20 @@ const handleDownloadStart = () => {
 
 // 下载完成
 const handleDownloadComplete = async (result) => {
-    const { songs, quality, successList, failedList, totalCount, successCount, failedCount, cancelled } = result;
-    
+    const { songs, quality, successList, failedList, totalCount, successCount, failedCount, cancelled, queued, addedCount } = result;
+
+    // 飞牛环境：已加入后台下载队列，任务在服务端持续执行，关闭页面不影响
+    if (queued) {
+        addLog(`已加入后台下载队列，共 ${addedCount || totalCount} 首歌曲，关闭页面后任务仍会继续。点击右下角悬浮窗查看进度`, 'success', 'fas fa-list-check');
+        return;
+    }
+
     if (cancelled) {
         addLog(`⛔ 下载已取消，已下载 ${successCount} 首，失败 ${failedCount} 首`, 'warning', 'fas fa-exclamation-triangle');
     } else {
         addLog(`下载完成！共 ${totalCount} 首歌曲，成功 ${successCount} 首，失败 ${failedCount} 首，音质: ${quality?.desc || quality?.name || quality}`, 'success', 'fas fa-check-circle');
     }
-    
+
     // 如果有 PushPlus Token，发送推送
     if (pushplusToken.value) {
         try {

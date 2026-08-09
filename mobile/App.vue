@@ -9,6 +9,7 @@
       </router-view>
     </div>
     <MusicPlayer ref="musicPlayer" />
+    <FloatingTaskWidget />
   </div>
 </template>
 
@@ -16,6 +17,7 @@
 import { ref, onMounted, watch } from 'vue';
 import TopNav from './components/TopNav.vue'
 import MusicPlayer from './components/MusicPlayer.vue'
+import FloatingTaskWidget from './components/FloatingTaskWidget.vue'
 import { MoeAuthStore } from './stores/store'
 
 const musicPlayer = ref(null)

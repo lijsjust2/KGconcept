@@ -155,78 +155,352 @@ async function consturctServer(moduleDefs) {
       .trim()
       .slice(0, 200);
 
-    // 下载文件到共享目录，按 歌手/专辑/文件名 组织
-    app.post('/fnos/download', async (req, res) => {
-      const logDownload = (msg) => {
-        const ts = new Date().toISOString();
-        const line = `[${ts}] ${msg}\n`;
-        fs.promises.appendFile(path.join(DOWNLOAD_DIR, '.download.log'), line).catch(() => {});
-      };
+    // 下载日志辅助函数
+    const logDownload = (msg) => {
+      const ts = new Date().toISOString();
+      const line = `[${ts}] ${msg}\n`;
+      fs.promises.appendFile(path.join(DOWNLOAD_DIR, '.download.log'), line).catch(() => {});
+    };
 
+    // 确保 DOWNLOAD_DIR 可写（首次写入前调用）
+    const ensureDownloadDirWritable = async () => {
+      try {
+        await fs.promises.access(DOWNLOAD_DIR, fs.constants.W_OK);
+      } catch (e) {
+        try {
+          await fs.promises.chmod(DOWNLOAD_DIR, 0o777);
+          await fs.promises.access(DOWNLOAD_DIR, fs.constants.W_OK);
+        } catch (_) {
+          logDownload(`ERROR: DOWNLOAD_DIR ${DOWNLOAD_DIR} 不可写，挂载可能未生效。文件将写入容器内部层（重启即丢失）。`);
+        }
+      }
+    };
+
+    // 核心下载函数：将远程 URL 流式写入共享目录（按 歌手/专辑 分类）
+    // 返回 { relativePath, absPath, size }
+    const downloadUrlToFile = async (url, fileName, artist, album, categorize = false) => {
+      await ensureDownloadDirWritable();
+
+      const safeFileName = sanitize(fileName);
+      let dir = DOWNLOAD_DIR;
+      let relativePath = safeFileName;
+      if (categorize) {
+        const safeArtist = sanitize(artist || '未知歌手');
+        const safeAlbum = sanitize(album || '未知专辑');
+        dir = path.join(DOWNLOAD_DIR, safeArtist, safeAlbum);
+        relativePath = path.join(safeArtist, safeAlbum, safeFileName);
+      }
+      await fs.promises.mkdir(dir, { recursive: true });
+
+      const filePath = path.join(dir, safeFileName);
+      const response = await axios.get(url, { responseType: 'stream', timeout: 60000, maxRedirects: 5 });
+
+      const writer = fs.createWriteStream(filePath);
+      let writeError = null;
+      writer.on('error', (err) => {
+        writeError = err;
+        logDownload(`ERROR: createWriteStream失败 ${filePath}: ${err.message}`);
+      });
+      response.data.pipe(writer);
+
+      await new Promise((resolve, reject) => {
+        writer.on('finish', () => {
+          if (writeError) reject(writeError);
+          else resolve();
+        });
+        writer.on('error', reject);
+        response.data.on('error', reject);
+      });
+
+      const absPath = filePath;
+      let fileSize = -1;
+      try { fileSize = (await fs.promises.stat(absPath)).size; } catch (__) {}
+      logDownload(`SUCCESS: 保存到本地绝对路径=${absPath} 相对路径=${relativePath} 大小=${fileSize}B`);
+      console.log('[FNOS] 文件已保存:', absPath, relativePath, `${fileSize}B`);
+      return { relativePath, absPath, size: fileSize };
+    };
+
+    // 单次下载接口（保留兼容，单曲及其他列表下载使用）
+    app.post('/fnos/download', async (req, res) => {
       try {
         const { url, fileName, artist, album, categorize } = req.body || {};
         if (!url || !fileName) {
           return res.status(400).json({ code: 1, msg: '缺少 url 或 fileName 参数' });
         }
-        const safeFileName = sanitize(fileName);
-
-        // 关键诊断：检查 DOWNLOAD_DIR 是否真实可写
-        try {
-          await fs.promises.access(DOWNLOAD_DIR, fs.constants.W_OK);
-        } catch (e) {
-          // 尝试修复权限
-          try {
-            await fs.promises.chmod(DOWNLOAD_DIR, 0o777);
-            await fs.promises.access(DOWNLOAD_DIR, fs.constants.W_OK);
-          } catch (_) {
-            logDownload(`ERROR: DOWNLOAD_DIR ${DOWNLOAD_DIR} 不可写，挂载可能未生效。文件将写入容器内部层（重启即丢失）。`);
-          }
-        }
-
-        // 仅批量下载（/download/ 页面，categorize=true）按 歌手/专辑 分类；
-        // 单曲及其他列表下载直接放到根目录，不再分类
-        let dir = DOWNLOAD_DIR;
-        let relativePath = safeFileName;
-        if (categorize) {
-          const safeArtist = sanitize(artist || '未知歌手');
-          const safeAlbum = sanitize(album || '未知专辑');
-          dir = path.join(DOWNLOAD_DIR, safeArtist, safeAlbum);
-          relativePath = path.join(safeArtist, safeAlbum, safeFileName);
-        }
-        await fs.promises.mkdir(dir, { recursive: true });
-
-        const filePath = path.join(dir, safeFileName);
-        const response = await axios.get(url, { responseType: 'stream', timeout: 60000, maxRedirects: 5 });
-
-        // 真正写入前确认文件创建成功（catch 权限错误）
-        const writer = fs.createWriteStream(filePath);
-        let writeError = null;
-        writer.on('error', (err) => {
-          writeError = err;
-          logDownload(`ERROR: createWriteStream失败 ${filePath}: ${err.message}`);
-        });
-        response.data.pipe(writer);
-
-        await new Promise((resolve, reject) => {
-          writer.on('finish', () => {
-            if (writeError) reject(writeError);
-            else resolve();
-          });
-          writer.on('error', reject);
-          response.data.on('error', reject);
-        });
-
-        const absPath = filePath;
-        let fileSize = -1;
-        try { fileSize = (await fs.promises.stat(absPath)).size; } catch (__) {}
-        logDownload(`SUCCESS: 保存到本地绝对路径=${absPath} 相对路径=${relativePath} 大小=${fileSize}B`);
-        console.log('[FNOS] 文件已保存:', absPath, relativePath, `${fileSize}B`);
-        res.json({ code: 0, msg: '下载成功', data: { path: relativePath, absPath: absPath, size: fileSize } });
+        const result = await downloadUrlToFile(url, fileName, artist, album, categorize);
+        res.json({ code: 0, msg: '下载成功', data: { path: result.relativePath, absPath: result.absPath, size: result.size } });
       } catch (e) {
         console.error('[FNOS] 下载失败:', e.message);
         logDownload(`ERROR: 下载异常: ${e.message}`);
         res.status(500).json({ code: 1, msg: '下载失败: ' + e.message });
       }
+    });
+
+    // ==================== 下载任务队列（后台持续执行） ====================
+    // 队列中的任务：pending / downloading
+    // 历史任务：success / failed / cancelled
+    const taskQueue = [];
+    const taskHistory = [];
+    const batches = new Map(); // batchId -> { authHeader, cookiesStr, addedAt, quality, delayMin, delayMax }
+    let workerRunning = false;
+    const MAX_HISTORY = 200;
+    const QUALITY_FALLBACK_ORDER = ['flac', '320', '128'];
+
+    // 内部调用 song/url 模块获取下载链接（带用户鉴权）
+    const fetchSongUrl = async (hash, quality, authHeader, cookiesStr) => {
+      const port = Number(process.env.PORT || '3000');
+      const reqUrl = `http://127.0.0.1:${port}/song/url`;
+      const params = { hash: String(hash || '').toLowerCase() };
+      if (quality && quality !== '128') params.quality = quality;
+      try {
+        const resp = await axios.get(reqUrl, {
+          params,
+          headers: {
+            ...(authHeader ? { Authorization: authHeader } : {}),
+            ...(cookiesStr ? { Cookie: cookiesStr } : {}),
+          },
+          timeout: 30000,
+        });
+        return resp.data;
+      } catch (e) {
+        logDownload(`ERROR: 获取下载链接失败 hash=${hash} quality=${quality}: ${e.message}`);
+        return null;
+      }
+    };
+
+    // 带音质降级的下载（flac → 320 → 128）
+    const downloadTaskWithFallback = async (task, batch) => {
+      let startIdx = QUALITY_FALLBACK_ORDER.indexOf(task.quality);
+      if (startIdx === -1) startIdx = 1; // 默认从 320 开始
+      let lastErr = null;
+      for (let i = startIdx; i < QUALITY_FALLBACK_ORDER.length; i++) {
+        const q = QUALITY_FALLBACK_ORDER[i];
+        try {
+          const urlResp = await fetchSongUrl(task.song.hash, q, batch.authHeader, batch.cookiesStr);
+          if (!urlResp || urlResp.status !== 1 || !urlResp.url || !urlResp.url[0]) {
+            throw new Error(`获取 ${q} 下载链接失败`);
+          }
+          const downloadUrl = urlResp.url[0];
+          const ext = q === 'flac' ? 'flac' : 'mp3';
+          const fileName = `${task.song.name} - ${task.song.author}.${ext}`;
+          const result = await downloadUrlToFile(downloadUrl, fileName, task.song.author, task.song.album, true);
+          return { ...result, quality: q };
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      throw lastErr || new Error('所有音质尝试失败');
+    };
+
+    // 队列 worker：循环处理 pending 任务，关闭页面/飞牛不影响（容器进程持续运行）
+    const processQueue = async () => {
+      if (workerRunning) return;
+      workerRunning = true;
+      try {
+        while (true) {
+          const task = taskQueue.find(t => t.status === 'pending');
+          if (!task) break;
+
+          const batch = batches.get(task.batchId);
+          if (!batch) {
+            task.status = 'failed';
+            task.error = '批次信息丢失';
+            task.finishedAt = Date.now();
+            taskHistory.push(task);
+            const idx = taskQueue.indexOf(task);
+            if (idx >= 0) taskQueue.splice(idx, 1);
+            continue;
+          }
+
+          task.status = 'downloading';
+          task.startedAt = Date.now();
+
+          try {
+            const result = await downloadTaskWithFallback(task, batch);
+            task.status = 'success';
+            task.path = result.relativePath;
+            task.quality = result.quality;
+          } catch (err) {
+            task.status = 'failed';
+            task.error = err.message || '下载失败';
+          }
+
+          task.finishedAt = Date.now();
+          taskHistory.push(task);
+          const idx = taskQueue.indexOf(task);
+          if (idx >= 0) taskQueue.splice(idx, 1);
+
+          // 裁剪历史
+          while (taskHistory.length > MAX_HISTORY) taskHistory.shift();
+
+          // 下一首前延时防风控
+          const hasNext = taskQueue.some(t => t.status === 'pending');
+          if (hasNext) {
+            const dMin = Math.max(0, Math.min(10, Number(batch.delayMin) || 1));
+            const dMax = Math.max(dMin, Math.min(10, Number(batch.delayMax) || 3));
+            const delaySec = Math.floor(Math.random() * (dMax - dMin + 1)) + dMin;
+            await new Promise(r => setTimeout(r, delaySec * 1000));
+          }
+        }
+      } catch (e) {
+        console.error('[FNOS Queue] worker 异常:', e.message);
+      } finally {
+        workerRunning = false;
+      }
+    };
+
+    // 添加任务到队列
+    app.post('/fnos/queue/add', async (req, res) => {
+      try {
+        const { songs, quality, delayMin, delayMax } = req.body || {};
+        if (!Array.isArray(songs) || songs.length === 0) {
+          return res.status(400).json({ code: 1, msg: '缺少 songs 参数' });
+        }
+        const batchId = `b_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const authHeader = req.headers['authorization'] || '';
+        const cookiesStr = req.headers['cookie'] || '';
+        const qualityVal = (quality && typeof quality === 'object') ? (quality.quality || '320') : (quality || '320');
+
+        batches.set(batchId, {
+          authHeader,
+          cookiesStr,
+          addedAt: Date.now(),
+          quality: qualityVal,
+          delayMin: Number(delayMin) || 1,
+          delayMax: Number(delayMax) || 3,
+        });
+
+        const now = Date.now();
+        const tasks = songs.map((song, i) => ({
+          id: `${batchId}_${i}`,
+          batchId,
+          status: 'pending',
+          song: {
+            hash: song.hash || song.originalData?.hash || '',
+            name: song.name || song.originalData?.name || '未知歌曲',
+            author: song.songInfo?.author || song.author || song.singer_name || '未知歌手',
+            album: song.songInfo?.album || song.album || song.album_name || '未知专辑',
+          },
+          quality: qualityVal,
+          error: '',
+          path: '',
+          addedAt: now + i,
+          startedAt: 0,
+          finishedAt: 0,
+        })).filter(t => t.song.hash); // 必须有 hash
+
+        if (tasks.length === 0) {
+          batches.delete(batchId);
+          return res.status(400).json({ code: 1, msg: '歌曲缺少 hash，无法加入队列' });
+        }
+
+        taskQueue.push(...tasks);
+
+        // 启动 worker（如未运行）
+        if (!workerRunning) {
+          processQueue().catch(e => console.error('[FNOS Queue] 启动 worker 失败:', e.message));
+        }
+
+        console.log(`[FNOS Queue] 批次 ${batchId} 加入 ${tasks.length} 首歌曲，音质 ${qualityVal}`);
+        res.json({ code: 0, msg: '已加入下载队列', data: { batchId, added: tasks.length, total: tasks.length } });
+      } catch (e) {
+        console.error('[FNOS Queue] 加入队列失败:', e.message);
+        res.status(500).json({ code: 1, msg: '加入队列失败: ' + e.message });
+      }
+    });
+
+    // 查询队列状态（前端轮询，关闭页面后任务仍在后台进行）
+    app.get('/fnos/queue/status', (req, res) => {
+      const active = taskQueue.filter(t => t.status === 'downloading');
+      const pending = taskQueue.filter(t => t.status === 'pending');
+      const recent = taskHistory.slice(-100).reverse();
+
+      // 按批次汇总
+      const batchMap = new Map();
+      const aggregate = (t) => {
+        if (!batchMap.has(t.batchId)) {
+          batchMap.set(t.batchId, {
+            batchId: t.batchId,
+            total: 0, pending: 0, downloading: 0, success: 0, failed: 0, cancelled: 0,
+            addedAt: t.addedAt,
+            quality: t.quality,
+            firstSongName: '',
+            currentSongName: '',
+          });
+        }
+        const b = batchMap.get(t.batchId);
+        b.total++;
+        if (b[t.status] !== undefined) b[t.status]++;
+        if (!b.firstSongName) b.firstSongName = t.song.name;
+        if (t.status === 'downloading') b.currentSongName = t.song.name;
+      };
+      taskQueue.forEach(aggregate);
+      taskHistory.forEach(aggregate);
+      const batchesArr = Array.from(batchMap.values()).sort((a, b) => b.addedAt - a.addedAt);
+
+      const totalSuccess = taskHistory.filter(t => t.status === 'success').length;
+      const totalFailed = taskHistory.filter(t => t.status === 'failed').length;
+
+      res.json({
+        code: 0,
+        data: {
+          hasTasks: taskQueue.length > 0,
+          activeCount: active.length,
+          pendingCount: pending.length,
+          totalInQueue: taskQueue.length,
+          historyCount: taskHistory.length,
+          totalSuccess,
+          totalFailed,
+          active: active.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality, startedAt: t.startedAt })),
+          pending: pending.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality })),
+          recent: recent.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality, status: t.status, error: t.error, path: t.path, finishedAt: t.finishedAt })),
+          batches: batchesArr,
+        },
+      });
+    });
+
+    // 取消队列任务（仅 pending 可取消，downloading 不可中断）
+    app.post('/fnos/queue/cancel', (req, res) => {
+      try {
+        const { batchId, taskId, all } = req.body || {};
+        let cancelledCount = 0;
+
+        const cancelTask = (t) => {
+          if (t.status === 'pending') {
+            t.status = 'cancelled';
+            t.finishedAt = Date.now();
+            taskHistory.push(t);
+            cancelledCount++;
+            return true;
+          }
+          return false;
+        };
+
+        if (all) {
+          for (let i = taskQueue.length - 1; i >= 0; i--) {
+            if (cancelTask(taskQueue[i])) taskQueue.splice(i, 1);
+          }
+        } else if (batchId) {
+          for (let i = taskQueue.length - 1; i >= 0; i--) {
+            if (taskQueue[i].batchId === batchId && cancelTask(taskQueue[i])) taskQueue.splice(i, 1);
+          }
+        } else if (taskId) {
+          const idx = taskQueue.findIndex(t => t.id === taskId);
+          if (idx >= 0 && cancelTask(taskQueue[idx])) taskQueue.splice(idx, 1);
+        }
+
+        while (taskHistory.length > MAX_HISTORY) taskHistory.shift();
+        res.json({ code: 0, msg: `已取消 ${cancelledCount} 个任务`, data: { cancelled: cancelledCount } });
+      } catch (e) {
+        res.status(500).json({ code: 1, msg: '取消失败: ' + e.message });
+      }
+    });
+
+    // 清空历史记录（已完成的任务）
+    app.post('/fnos/queue/clear', (req, res) => {
+      const before = taskHistory.length;
+      taskHistory.length = 0;
+      res.json({ code: 0, msg: `已清空 ${before} 条历史`, data: { cleared: before } });
     });
 
     // 列出已下载的音频文件
