@@ -176,6 +176,16 @@ async function consturctServer(moduleDefs) {
   // 飞牛容器内前端直接请求 /api/fnos/*，需要后端原生支持
   const fnosRouter = express.Router();
 
+  // 辅助：检查路径是否可写
+  const isPathWritable = (p) => {
+    try {
+      fs.accessSync(p, fs.constants.W_OK);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
+
   // 通过飞牛 OpenAPI Unix Socket 调用后端能力
   const fnosOpenApi = (req, data) => {
     return new Promise((resolve, reject) => {
@@ -231,62 +241,15 @@ async function consturctServer(moduleDefs) {
     });
   });
 
-  // 辅助：检查路径是否可写（用作"已授权"的判断标准）
-  const isPathWritable = (p) => {
-    try {
-      fs.accessSync(p, fs.constants.W_OK);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  };
-
-  // 辅助：深度扫描 /vol1 下所有子目录，最多扫到 depth 层，只返回**可写**的目录
-  // 飞牛把授权的目录挂载到 /vol1 下，未授权的目录虽然在 /vol1 里，但容器里是只读或无权限
-  // 所以"可写" == "已授权且可保存文件"
-  const scanVol1Folders = (maxDepth = 5) => {
-    const results = [];
-
-    const walk = (dir, depth) => {
-      if (depth > maxDepth) return;
-      let entries;
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch (_) {
-        return;
-      }
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        if (entry.name.startsWith('.')) continue;
-        const full = path.join(dir, entry.name);
-        if (isPathWritable(full)) {
-          results.push(full);
-        }
-        // 继续递归子目录，因为用户可能授权了更深层的目录
-        walk(full, depth + 1);
-      }
-    };
-
-    const vol1 = '/vol1';
-    if (fs.existsSync(vol1)) {
-      // /vol1 本身如果可写，也加入
-      if (isPathWritable(vol1)) {
-        results.push(vol1);
-      }
-      walk(vol1, 1);
-    }
-    return results;
-  };
-
-  // 查询管理员为应用授权的共享目录列表
+  // 查询管理员为应用授权的共享目录列表（严格按飞牛"访问权限"的勾选结果）
   //
-  // 实现策略：
-  //   1) 主方案：文件系统扫描 /vol1 下所有**可写**目录，以及应用共享目录
-  //      → 不依赖 TRIM_API_TOKEN，刷新按钮每次点击都能读到最新状态
-  //      → 理由：飞牛只把用户授权的目录以读写权限挂载到容器 /vol1，
-  //        未授权的目录在 /vol1 里是 read-only 或根本读不到。
-  //   2) 附加方案：如果 OpenAPI 能通，再调用 getSharedAccessibleFolders + convertPath
-  //      补充更友好的中文名称（例如「存储空间1/admin 的文件/照片」）
+  // 数据源优先级（严格，绝不扫描子目录瞎猜）：
+  //   1) trim.file.getSharedAccessibleFolders  → 飞牛后台精确返回用户在"访问权限"里勾选的目录
+  //      文档: https://developer.fnnas.com/api/authorization/shared-access/#查询共享授权路径
+  //      这是唯一可信来源。如果调用失败，说明 TRIM_API_TOKEN 或 socket 有问题。
+  //   2) 应用自身的 data-share 目录（/var/apps/KGconcept/shares/KGconcept 下的直接子目录）
+  //      → 这是 config/resource 的 shares 声明里应用自带的共享目录
+  //      飞牛会自动把它们挂到容器，用户在"访问权限"面板里也能看到
   fnosRouter.get('/shared-folders', async (req, res) => {
     const folders = [];
     const seenPaths = new Set();
@@ -296,80 +259,70 @@ async function consturctServer(moduleDefs) {
       folders.push({ path: p, source, label: label || p });
     };
 
-    // (1) 默认共享下载目录
+    // (1) 应用自身共享目录（config/resource 声明的 shares）
+    //     固定先加默认下载 DOWNLOAD_DIR（即 KGconcept/downloads）
     if (DOWNLOAD_DIR) {
       addFolder(DOWNLOAD_DIR, 'data-share', '默认下载目录 (应用共享)');
     }
+    // 父级 KGconcept 目录（DOWNLOAD_DIR/../）也可能被声明为 share
+    try {
+      const appShareRoot = DOWNLOAD_DIR
+        ? path.resolve(DOWNLOAD_DIR, '..')
+        : '/var/apps/KGconcept/shares/KGconcept';
+      if (fs.existsSync(appShareRoot) && isPathWritable(appShareRoot) && appShareRoot !== DOWNLOAD_DIR) {
+        addFolder(appShareRoot, 'app-share', '应用文件/KGconcept');
+      }
+    } catch (_) {}
 
     if (!FNOS_ENV) {
       return res.json({ code: 0, msg: '', data: { paths: folders } });
     }
 
-    // (2) 扫描应用共享目录（fnap/config/resource 里声明的 shares:
-    //     KGconcept / KGconcept/downloads 等）
-    //     它们通常在 /var/apps/KGconcept/shares/KGconcept 下
+    // (2) 调用飞牛官方后端 API：trim.file.getSharedAccessibleFolders
+    //     严格使用这个结果 — 用户在"访问权限"里勾选了哪几个，这里就返回哪几个，
+    //     不做任何文件系统扫描，不猜任何子目录。
+    let rawPaths = [];
     try {
-      const appShareRoot = DOWNLOAD_DIR
-        ? path.resolve(DOWNLOAD_DIR, '..')          // /var/apps/KGconcept/shares/KGconcept
-        : '/var/apps/KGconcept/shares/KGconcept';
-      if (fs.existsSync(appShareRoot)) {
-        const entries = fs.readdirSync(appShareRoot, { withFileTypes: true });
-        for (const e of entries) {
-          if (!e.isDirectory()) continue;
-          const full = path.join(appShareRoot, e.name);
-          if (isPathWritable(full)) {
-            addFolder(full, 'app-share', `应用文件/KGconcept/${e.name}`);
-          }
-        }
-        // 父目录本身也可写的话，也加入
-        if (isPathWritable(appShareRoot)) {
-          addFolder(appShareRoot, 'app-share', '应用文件/KGconcept');
-        }
+      console.log('[FNOS] 调用 trim.file.getSharedAccessibleFolders（严格查询访问权限目录）...');
+      const apiResp = await fnosOpenApi('trim.file.getSharedAccessibleFolders');
+      console.log('[FNOS] getSharedAccessibleFolders 返回:', JSON.stringify(apiResp));
+
+      if (apiResp?.code === 0 && Array.isArray(apiResp?.data?.paths)) {
+        rawPaths = apiResp.data.paths;
+      } else {
+        console.warn('[FNOS] getSharedAccessibleFolders 返回 code=%s msg=%s', apiResp?.code, apiResp?.msg);
+        // 返回结构不符合预期，继续往下走（有 data-share 的目录保底）
       }
     } catch (e) {
-      console.warn('[FNOS] 扫描应用共享目录失败:', e.message);
+      console.warn('[FNOS] getSharedAccessibleFolders 调用失败:', e.message);
+      console.warn('[FNOS] 请检查: TRIM_API_TOKEN 长度=', TRIM_API_TOKEN.length, ' Socket 存在=', fs.existsSync(FNOS_SOCKET_PATH));
     }
 
-    // (3) 主方案：扫描 /vol1 下所有可写目录
-    console.log('[FNOS] 扫描 /vol1 下所有可写目录（主方案，不依赖 token）...');
-    try {
-      const vol1Writable = scanVol1Folders(5);
-      console.log(`[FNOS] 扫描到 ${vol1Writable.length} 个可写目录:`, vol1Writable);
-      for (const p of vol1Writable) {
-        // 去掉开头的 /vol1/，更像人类可读名称
-        const rel = p.replace(/^\/vol1\/?/, '');
-        const label = rel ? `存储空间/${rel}` : '/vol1 (根)';
-        addFolder(p, 'app-authorization', label);
-      }
-    } catch (e) {
-      console.warn('[FNOS] 扫描 /vol1 失败:', e.message);
-    }
-
-    // (4) 附加方案：如果 OpenAPI (token+socket) 可用，调用 convertPath
-    //     把已有列表里的路径转成更友好的中文名称（「存储空间1/用户/文件」）
-    if (TRIM_API_TOKEN && fs.existsSync(FNOS_SOCKET_PATH) && folders.length > 0) {
+    // (3) 把 rawPaths 里的路径转成友好显示名称
+    let pathMap = {};
+    if (rawPaths.length > 0) {
       try {
-        const paths = folders.map((f) => f.path);
         const convertResp = await fnosOpenApi('trim.file.convertPath', {
-          path: paths,
+          path: rawPaths,
           language: 'zh-CN',
         });
         if (convertResp?.code === 0 && Array.isArray(convertResp?.data?.result)) {
-          const labelMap = {};
           for (const item of convertResp.data.result) {
-            if (item.semanticPath) labelMap[item.path] = item.semanticPath;
+            pathMap[item.path] = item.semanticPath || item.path;
           }
-          for (const f of folders) {
-            if (labelMap[f.path]) f.label = labelMap[f.path];
-          }
-          console.log('[FNOS] convertPath 友好名称映射:', labelMap);
         }
       } catch (e) {
-        console.warn('[FNOS] convertPath 跳过（无token或socket）:', e.message);
+        console.warn('[FNOS] convertPath 失败，用原始路径作为 label:', e.message);
       }
     }
+    for (const p of rawPaths) {
+      addFolder(p, 'app-authorization', pathMap[p] || p);
+    }
 
-    console.log('[FNOS] 本次刷新返回目录列表:', folders.map(f => `${f.label}  →  ${f.path}  [${f.source}]`));
+    console.log('[FNOS] 本次刷新返回目录列表（严格来自 data-share + getSharedAccessibleFolders）:');
+    for (const f of folders) {
+      console.log(`  - [${f.source}] ${f.label}  →  ${f.path}`);
+    }
     res.json({ code: 0, msg: '', data: { paths: folders } });
   });
 
