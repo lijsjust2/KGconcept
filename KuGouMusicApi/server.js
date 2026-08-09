@@ -142,6 +142,18 @@ async function consturctServer(moduleDefs) {
   const FNOS_SOCKET_PATH = process.env.FNOS_SOCKET_PATH || '/var/run/trim_open_gateway_apiscope.socket';
   const http = require('http');
 
+  // 启动时诊断：打印飞牛环境配置
+  console.log('========================================');
+  console.log('[FNOS] 启动环境诊断');
+  console.log('  FNOS_ENV              :', FNOS_ENV);
+  console.log('  DOWNLOAD_DIR          :', DOWNLOAD_DIR);
+  console.log('  TRIM_APPNAME          :', TRIM_APPNAME);
+  console.log('  TRIM_API_TOKEN        :', TRIM_API_TOKEN ? `OK (length=${TRIM_API_TOKEN.length})` : 'EMPTY — 后端 API 调用会失败');
+  console.log('  FNOS_SOCKET_PATH      :', FNOS_SOCKET_PATH);
+  console.log('  Socket exists?        :', fs.existsSync(FNOS_SOCKET_PATH) ? 'YES' : 'NO');
+  console.log('  DOWNLOAD_DIR exists?  :', fs.existsSync(DOWNLOAD_DIR) ? 'YES' : 'NO');
+  console.log('========================================');
+
   // 飞牛路由统一挂到 Router 上，然后同时暴露 /fnos/* 和 /api/fnos/* 两个前缀
   // 本地开发靠 Vite proxy 把 /api/fnos/* 转成后端 /fnos/*；
   // 飞牛容器内前端直接请求 /api/fnos/*，需要后端原生支持

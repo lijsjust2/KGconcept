@@ -5,17 +5,18 @@ services:
     ports:
       - "8880:8880"
     volumes:
-      # data-share 声明的共享目录: KGconcept/downloads（默认下载位置）
+      # 1) data-share 声明的共享目录: KGconcept/downloads（默认下载位置）
       - "/var/apps/KGconcept/shares/KGconcept/downloads:/app/downloads"
-      # data-share 声明的共享目录: KGconcept（应用根目录）
-      - "/var/apps/KGconcept/shares/KGconcept:/var/apps/KGconcept/shares/KGconcept"
-      # 挂载整个 /vol1：用户在"应用设置 → 访问权限"里添加的授权目录（/vol1/... 路径）
-      # 在容器内以相同路径可见，应用用户 ACL 由飞牛系统管理
+      # 2) 挂载整个 /vol1：用户在"应用设置 → 访问权限"里添加的授权目录（/vol1/... 路径）
+      #    在容器内以相同路径可见，应用用户 ACL 由飞牛系统管理
       - "/vol1:/vol1"
-      # 飞牛 OpenAPI Unix Socket：后端 Node 用来查询授权目录列表
+      # 3) 飞牛 OpenAPI Unix Socket：后端 Node 用来查询授权目录列表
       - "/var/run/trim_open_gateway_apiscope.socket:/var/run/trim_open_gateway_apiscope.socket"
+      # 4) TRIM_API_TOKEN 持久化文件：飞牛在执行 cmd/main 时把 token 写入此文件，
+      #    docker-entrypoint.sh 启动时读取 /app/.trim_token 并 export 到环境变量。
+      #    （appcenter 启动 docker-compose 时不会把 env 直接注入容器，所以必须通过文件中转）
+      - "/var/apps/KGconcept/.trim_token:/app/.trim_token:ro"
     environment:
       - FNOS_ENV=true
       - DOWNLOAD_DIR=/app/downloads
-      - TRIM_API_TOKEN=${TRIM_API_TOKEN}
       - TRIM_APPNAME=KGconcept
