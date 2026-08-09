@@ -141,22 +141,39 @@ async function consturctServer(moduleDefs) {
   const FNOS_SOCKET_PATH = process.env.FNOS_SOCKET_PATH || '/var/run/trim_open_gateway_apiscope.socket';
   const http = require('http');
 
-  // TRIM_API_TOKEN 获取（双重保障：环境变量 + 文件）
-  // 1) 优先使用 docker-entrypoint.sh export 的环境变量
-  // 2) 如果环境变量为空，直接读 /app/.trim_token 文件
+  // TRIM_API_TOKEN 获取（三重保障）
+  // 文档: token 在系统调用应用脚本时注入 TRIM_API_TOKEN 环境变量
+  // 策略:
+  //   1) 优先读 process.env.TRIM_API_TOKEN
+  //   2) 如果为空，读 /app/.trim_token 文件（由 cmd/main 写入）
+  //   3) 启动后每 5 秒检查一次 token 文件，有更新就替换
   let TRIM_API_TOKEN = process.env.TRIM_API_TOKEN || '';
   const TOKEN_FILE_PATH = '/app/.trim_token';
-  if (!TRIM_API_TOKEN && fs.existsSync(TOKEN_FILE_PATH)) {
-    try {
-      const fileToken = fs.readFileSync(TOKEN_FILE_PATH, 'utf8').trim();
-      if (fileToken) {
-        TRIM_API_TOKEN = fileToken;
-        console.log('[FNOS] 从文件读取 TRIM_API_TOKEN 成功 (长度=' + fileToken.length + ')');
-      }
-    } catch (e) {
-      console.warn('[FNOS] 读取 token 文件失败:', e.message);
+
+  const refreshTokenFromFile = () => {
+    if (TRIM_API_TOKEN) return;  // 已有 token 就不覆盖
+    if (fs.existsSync(TOKEN_FILE_PATH)) {
+      try {
+        const fileToken = fs.readFileSync(TOKEN_FILE_PATH, 'utf8').trim();
+        if (fileToken) {
+          TRIM_API_TOKEN = fileToken;
+          console.log('[FNOS] 从文件读取 TRIM_API_TOKEN 成功 (长度=' + fileToken.length + ')');
+        }
+      } catch (_) {}
     }
-  }
+  };
+
+  // 立即尝试一次
+  refreshTokenFromFile();
+
+  // 后台轮询：每 5 秒再检查一次 token 文件
+  setInterval(() => {
+    const prev = TRIM_API_TOKEN;
+    refreshTokenFromFile();
+    if (TRIM_API_TOKEN && TRIM_API_TOKEN !== prev) {
+      console.log('[FNOS] TRIM_API_TOKEN 已更新 (长度=' + TRIM_API_TOKEN.length + ')');
+    }
+  }, 5000);
 
   // 启动时诊断：打印飞牛环境配置
   console.log('========================================');
@@ -188,14 +205,17 @@ async function consturctServer(moduleDefs) {
 
   // 通过飞牛 OpenAPI Unix Socket 调用后端能力
   //
-  // 鉴权说明（官方文档）：
-  //   - 当应用在 config/resource 声明了对应 scope（如 trim.file.sharedAccess），
-  //     飞牛后端会通过 Unix Socket + appName 自动识别应用身份，
-  //     不需要 Authorization: Bearer token 头。
-  //   - 我们仍然带上 TRIM_API_TOKEN 作为额外安全层（如果有的话）。
-  //   - 关键：**无论 token 是否为空都必须发请求**，不能因为 token 空就跳过。
+  // 严格按飞牛官方文档:
+  //   - Unix Socket: /var/run/trim_open_gateway_apiscope.socket
+  //   - URL: POST /api/v1/trimapp
+  //   - 必须带: Authorization: Bearer <token>
+  //   - 请求体: { reqId, req, appName, data }
+  //   - token 从 process.env.TRIM_API_TOKEN 读取，或从 /app/.trim_token 文件读取
   const fnosOpenApi = (req, data) => {
     return new Promise((resolve, reject) => {
+      // 每次调用前刷新 token（确保读到最新的 token 文件）
+      refreshTokenFromFile();
+
       const payload = JSON.stringify({
         reqId: String(Date.now() + Math.random()),
         req,
@@ -203,13 +223,18 @@ async function consturctServer(moduleDefs) {
         data: data || {},
       });
 
-      // 构建 headers：始终带 Content-Type，可选带 Authorization
       const headers = {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload),
       };
+
+      // 严格按文档：必须带 Authorization: Bearer <token>
       if (TRIM_API_TOKEN) {
         headers['Authorization'] = `Bearer ${TRIM_API_TOKEN}`;
+      } else {
+        // token 为空也发请求，让飞牛后端返回明确的错误信息
+        // 这样我们就能知道是 token 问题还是其他问题
+        console.warn('[FNOS] fnosOpenApi 调用时 TRIM_API_TOKEN 为空:', req);
       }
 
       const options = {
@@ -227,17 +252,14 @@ async function consturctServer(moduleDefs) {
         hRes.on('end', () => {
           try {
             const parsed = JSON.parse(buf);
-            // 请求成功（无论 code 是 0 还是其他），都 resolve 让上层处理
             resolve(parsed);
           } catch (e) {
-            // 不是 JSON（通常是错误响应），直接 reject
             reject(new Error('非JSON响应: ' + buf.slice(0, 200)));
           }
         });
       });
 
       hReq.on('error', (err) => {
-        // socket 连接错误 → 这是真正的失败
         reject(new Error(`Unix Socket 连接失败 (${FNOS_SOCKET_PATH}): ${err.message}`));
       });
       hReq.on('timeout', () => {
