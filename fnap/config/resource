@@ -18,6 +18,7 @@
     ]
   },
   "api-scope": [
-    "trim.file.sharedAccess"
+    "trim.file.sharedAccess",
+    "trim.file.path"
   ]
 }

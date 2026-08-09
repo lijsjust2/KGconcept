@@ -203,6 +203,7 @@ async function consturctServer(moduleDefs) {
   });
 
   // 查询管理员为应用授权的共享目录列表 + data-share 默认目录
+  // 文档: https://developer.fnnas.com/api/authorization/shared-access/
   fnosRouter.get('/shared-folders', async (req, res) => {
     const folders = [];
     const seenPaths = new Set();
@@ -217,117 +218,82 @@ async function consturctServer(moduleDefs) {
       return res.json({ code: 0, msg: '', data: { paths: folders } });
     }
 
-    // 方式1: 通过 Unix Socket 调用飞牛 OpenAPI
+    // 通过后端 API trim.file.getSharedAccessibleFolders 查询管理员授权的目录
+    // 文档: https://developer.fnnas.com/api/authorization/shared-access/#查询共享授权路径
     try {
-      console.log('[FNOS] 尝试通过 OpenAPI 查询授权目录, socket:', FNOS_SOCKET_PATH);
+      console.log('[FNOS] 调用 trim.file.getSharedAccessibleFolders...');
       const apiResp = await fnosOpenApi('trim.file.getSharedAccessibleFolders');
-      console.log('[FNOS] OpenAPI 响应:', JSON.stringify(apiResp));
-      if (apiResp?.code === 0 && Array.isArray(apiResp?.data?.paths)) {
-        for (const p of apiResp.data.paths) {
-          if (!seenPaths.has(p)) {
-            seenPaths.add(p);
-            folders.push({ path: p, source: 'app-authorization', label: p });
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('[FNOS] OpenAPI 查询授权目录失败:', e.message);
-    }
+      console.log('[FNOS] getSharedAccessibleFolders 响应:', JSON.stringify(apiResp));
 
-    // 方式2: 扫描容器内挂载的 /vol1 目录（兜底方案）
-    try {
-      const vol1Path = '/vol1';
-      if (fs.existsSync(vol1Path)) {
-        console.log('[FNOS] 扫描 /vol1 下的授权目录...');
-        // 扫描 /vol1 的一级子目录
-        const topEntries = fs.readdirSync(vol1Path, { withFileTypes: true });
-        for (const topEntry of topEntries) {
-          if (!topEntry.isDirectory()) continue;
-          const topPath = path.join(vol1Path, topEntry.name);
-          // 扫描二级子目录
+      if (apiResp?.code === 0 && Array.isArray(apiResp?.data?.paths)) {
+        const rawPaths = apiResp.data.paths;
+        console.log('[FNOS] 获取到授权目录:', rawPaths);
+
+        // 调用 trim.file.convertPath 把 /vol1/... 转成用户可读的语义路径
+        // 文档: https://developer.fnnas.com/api/authorization/path-convert/
+        let pathMap = {}; // { '/vol1/1000/photo': '存储空间1/admin 的文件/photo' }
+        if (rawPaths.length > 0) {
           try {
-            const subEntries = fs.readdirSync(topPath, { withFileTypes: true });
-            for (const subEntry of subEntries) {
-              if (!subEntry.isDirectory()) continue;
-              const subPath = path.join(topPath, subEntry.name);
-              if (!seenPaths.has(subPath)) {
-                seenPaths.add(subPath);
-                folders.push({
-                  path: subPath,
-                  source: 'volume-scan',
-                  label: `/${topEntry.name}/${subEntry.name}`
-                });
-                console.log('[FNOS] 发现授权目录:', subPath);
+            console.log('[FNOS] 调用 trim.file.convertPath 转换路径...');
+            const convertResp = await fnosOpenApi('trim.file.convertPath', {
+              path: rawPaths,
+              language: 'zh-CN',
+            });
+            console.log('[FNOS] convertPath 响应:', JSON.stringify(convertResp));
+            if (convertResp?.code === 0 && Array.isArray(convertResp?.data?.result)) {
+              for (const item of convertResp.data.result) {
+                pathMap[item.path] = item.semanticPath || item.path;
               }
             }
           } catch (e) {
-            // 某些子目录可能无权限，跳过
-          }
-          // 一级目录本身也可能是授权目录
-          if (!seenPaths.has(topPath)) {
-            try {
-              fs.accessSync(topPath, fs.constants.W_OK);
-              seenPaths.add(topPath);
-              folders.push({ path: topPath, source: 'volume-scan', label: `/${topEntry.name}` });
-              console.log('[FNOS] 发现授权目录:', topPath);
-            } catch (e) {
-              // 不可写则跳过
-            }
+            console.warn('[FNOS] convertPath 失败，使用原始路径作为 label:', e.message);
           }
         }
 
-        // 也扫描 /vol1 下的直接子目录（可能用户授权的就是一级目录）
-        for (const topEntry of topEntries) {
-          if (!topEntry.isDirectory()) continue;
-          const topPath = path.join(vol1Path, topEntry.name);
-          if (!seenPaths.has(topPath)) {
-            try {
-              fs.accessSync(topPath, fs.constants.W_OK);
-              seenPaths.add(topPath);
-              folders.push({ path: topPath, source: 'volume-scan', label: `/${topEntry.name}` });
-              console.log('[FNOS] 发现授权目录:', topPath);
-            } catch (e) {
-              // 不可写则跳过
-            }
+        for (const p of rawPaths) {
+          if (!seenPaths.has(p)) {
+            seenPaths.add(p);
+            folders.push({
+              path: p,
+              source: 'app-authorization',
+              label: pathMap[p] || p,
+            });
           }
         }
-      }
-
-      // 也扫描应用自己的共享目录 /var/apps/KGconcept/shares/KGconcept
-      const appSharePath = '/var/apps/KGconcept/shares/KGconcept';
-      if (fs.existsSync(appSharePath)) {
-        try {
-          fs.accessSync(appSharePath, fs.constants.W_OK);
-          if (!seenPaths.has(appSharePath)) {
-            seenPaths.add(appSharePath);
-            folders.push({ path: appSharePath, source: 'app-share', label: '应用文件/KGconcept' });
-            console.log('[FNOS] 发现应用共享目录:', appSharePath);
-          }
-          // 扫描子目录
-          const shareEntries = fs.readdirSync(appSharePath, { withFileTypes: true });
-          for (const entry of shareEntries) {
-            if (entry.isDirectory()) {
-              const entryPath = path.join(appSharePath, entry.name);
-              if (!seenPaths.has(entryPath)) {
-                try {
-                  fs.accessSync(entryPath, fs.constants.W_OK);
-                  seenPaths.add(entryPath);
-                  folders.push({ path: entryPath, source: 'app-share', label: `应用文件/KGconcept/${entry.name}` });
-                  console.log('[FNOS] 发现应用子目录:', entryPath);
-                } catch (_) {}
-              }
-            }
-          }
-        } catch (e) {
-          // 无权限则跳过
-        }
+      } else {
+        console.warn('[FNOS] getSharedAccessibleFolders 返回非预期:', apiResp?.code, apiResp?.msg);
       }
     } catch (e) {
-      console.warn('[FNOS] 扫描 /vol1 失败:', e.message);
+      console.warn('[FNOS] getSharedAccessibleFolders 调用失败:', e.message);
     }
 
-    console.log('[FNOS] 最终返回目录列表:', folders.map(f => f.path));
+    console.log('[FNOS] 最终返回目录列表:', folders.map(f => `${f.path} (${f.label})`));
     res.json({ code: 0, msg: '', data: { paths: folders } });
+  });
+
+  // 诊断端点：返回飞牛环境配置和 socket/token 状态，便于排查
+  fnosRouter.get('/debug', async (req, res) => {
+    const debug = {
+      FNOS_ENV,
+      DOWNLOAD_DIR,
+      TRIM_APPNAME,
+      TRIM_API_TOKEN: TRIM_API_TOKEN ? `${TRIM_API_TOKEN.slice(0, 8)}...(${TRIM_API_TOKEN.length} chars)` : '(empty)',
+      FNOS_SOCKET_PATH,
+      socketExists: fs.existsSync(FNOS_SOCKET_PATH),
+      openApiTest: null,
+    };
+
+    // 尝试调用 getSharedAccessibleFolders 并返回完整结果
+    if (FNOS_ENV) {
+      try {
+        const apiResp = await fnosOpenApi('trim.file.getSharedAccessibleFolders');
+        debug.openApiTest = { success: true, response: apiResp };
+      } catch (e) {
+        debug.openApiTest = { success: false, error: e.message };
+      }
+    }
+
+    res.json(debug);
   });
 
   // 仅在飞牛环境下启用服务端下载到共享目录
